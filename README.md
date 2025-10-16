@@ -47,7 +47,7 @@ yt_downloader/
 ## Options
 
 ```
--o, --output PATH        Output directory (default: ./videos)
+-o, --output PATH       Output directory (default: ./videos)
 -v, --verbose           Show detailed information
 --max-quality HEIGHT    Maximum quality: 360, 480, 720, 1080, 1440, 2160
 --overwrite             Overwrite existing files
