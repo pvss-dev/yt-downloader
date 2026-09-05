@@ -1,5 +1,22 @@
-from .downloader import VideoDownloader
-from .exceptions import DownloadError, ConfigError
+from .config import DownloaderConfig
+from .downloader import (
+    DownloadCancelled,
+    DownloadResult,
+    Progress,
+    VideoDownloader,
+    VideoInfo,
+)
+from .exceptions import ConfigError, DirectoryError, DownloadError
 
-__version__ = "1.0.0"
-__all__ = ["VideoDownloader", "DownloadError", "ConfigError"]
+__version__ = "2.0.0"
+__all__ = [
+    "VideoDownloader",
+    "DownloaderConfig",
+    "DownloadResult",
+    "VideoInfo",
+    "Progress",
+    "DownloadCancelled",
+    "DownloadError",
+    "ConfigError",
+    "DirectoryError",
+]

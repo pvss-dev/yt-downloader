@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Downloader</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬇</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M21.6 7.2a2.8 2.8 0 0 0-2-2C17.9 4.8 12 4.8 12 4.8s-5.9 0-7.6.4a2.8 2.8 0 0 0-2 2A29 29 0 0 0 2 12a29 29 0 0 0 .4 4.8 2.8 2.8 0 0 0 2 2c1.7.4 7.6.4 7.6.4s5.9 0 7.6-.4a2.8 2.8 0 0 0 2-2A29 29 0 0 0 22 12a29 29 0 0 0-.4-4.8z"/>
+      <path class="brand-play" d="M10.2 15.3V8.7l5.4 3.3z"/>
+    </svg>
+    <h1>YouTube Downloader</h1>
+  </div>
+  <div class="version" id="version" title="versão do yt-dlp em uso"></div>
+</header>
+
+<main>
+  <section class="panel">
+    <form id="download-form" autocomplete="off">
+      <div class="url-row">
+        <input
+          type="url"
+          id="url"
+          name="url"
+          placeholder="Cole a URL do vídeo ou playlist do YouTube"
+          required
+          spellcheck="false">
+        <button type="submit" class="btn btn-primary" id="submit-btn">
+          <span class="btn-label">Baixar</span>
+        </button>
+      </div>
+
+      <div class="preview" id="preview" hidden>
+        <img class="preview-thumb" id="preview-thumb" alt="">
+        <div class="preview-meta">
+          <p class="preview-title" id="preview-title"></p>
+          <p class="preview-sub">
+            <span id="preview-uploader"></span>
+            <span class="dot">·</span>
+            <span id="preview-duration"></span>
+            <span id="preview-playlist" class="badge" hidden></span>
+          </p>
+        </div>
+      </div>
+
+      <div class="preview-error" id="preview-error" hidden></div>
+
+      <details class="options" id="options">
+        <summary>
+          <span>Opções</span>
+          <span class="options-summary" id="options-summary">1080p · vídeo</span>
+        </summary>
+
+        <div class="options-grid">
+          <label class="field">
+            <span class="field-label">Qualidade máxima</span>
+            <select id="max_height" name="max_height">
+              <option value="">Melhor disponível</option>
+              <option value="2160">2160p (4K)</option>
+              <option value="1440">1440p (2K)</option>
+              <option value="1080" selected>1080p (Full HD)</option>
+              <option value="720">720p (HD)</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Formato de áudio</span>
+            <select id="audio_format" name="audio_format" disabled>
+              <option value="mp3" selected>MP3</option>
+              <option value="m4a">M4A</option>
+              <option value="opus">Opus</option>
+              <option value="flac">FLAC</option>
+              <option value="wav">WAV</option>
+            </select>
+          </label>
+
+          <label class="field field-wide">
+            <span class="field-label">Pasta de destino</span>
+            <input
+              type="text"
+              id="output_path"
+              name="output_path"
+              placeholder="./videos"
+              spellcheck="false">
+          </label>
+        </div>
+
+        <div class="toggles">
+          <label class="toggle">
+            <input type="checkbox" id="audio_only" name="audio_only">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Somente áudio</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="playlist" name="playlist">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Baixar playlist inteira</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="subtitles" name="subtitles">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Legendas</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="thumbnail" name="thumbnail">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Embutir capa</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="overwrite" name="overwrite">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Sobrescrever</span>
+          </label>
+        </div>
+      </details>
+    </form>
+  </section>
+
+  <section class="queue">
+    <div class="queue-head">
+      <h2>Downloads</h2>
+      <button type="button" class="btn btn-ghost" id="clear-btn" hidden>Limpar concluídos</button>
+    </div>
+
+    <div id="jobs"></div>
+
+    <p class="empty" id="empty">
+      Nenhum download ainda. Cole uma URL acima para começar.
+    </p>
+  </section>
+</main>
+
+<template id="job-template">
+  <article class="job" data-status="queued">
+    <img class="job-thumb" alt="" hidden>
+    <div class="job-body">
+      <div class="job-head">
+        <p class="job-title">Carregando…</p>
+        <span class="job-status"></span>
+      </div>
+      <p class="job-sub"></p>
+      <div class="progress">
+        <div class="progress-bar"></div>
+      </div>
+      <div class="job-foot">
+        <span class="job-stats"></span>
+        <span class="job-actions">
+          <a class="btn btn-small btn-save" hidden>Salvar arquivo</a>
+          <button type="button" class="btn btn-small btn-cancel">Cancelar</button>
+        </span>
+      </div>
+      <p class="job-error" hidden></p>
+    </div>
+  </article>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

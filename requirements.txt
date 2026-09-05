@@ -1,1 +1,8 @@
-yt-dlp>=2023.0.0
+# yt-dlp must be kept current: YouTube changes its player regularly and a
+# months-old release starts failing with HTTP 403 on the media URLs.
+# Run `pip install -U yt-dlp` whenever downloads begin to fail.
+yt-dlp[default]>=2026.8.19
+
+# Web interface
+fastapi>=0.115
+uvicorn[standard]>=0.30

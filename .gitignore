@@ -38,3 +38,7 @@ videos/
 # LOG FILES / DEBUG FILES
 # ======================
 yt_downloader.egg-info/
+# ======================
+# TESTS
+# ======================
+.pytest_cache/

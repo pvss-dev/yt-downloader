@@ -1,19 +1,26 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
     name="yt-downloader",
-    version="1.0.0",
-    packages=find_packages(),
+    version="2.0.0",
+    packages=find_packages(exclude=["tests", "tests.*"]),
+    include_package_data=True,
+    package_data={"yt_downloader": ["web/static/*"]},
     install_requires=[
-        "yt-dlp>=2023.0.0",
+        "yt-dlp[default]>=2026.8.19",
     ],
+    extras_require={
+        "web": ["fastapi>=0.115", "uvicorn[standard]>=0.30"],
+        "dev": ["pytest>=8.0", "httpx>=0.27"],
+    },
     entry_points={
         "console_scripts": [
             "yt-download=yt_downloader.cli:main",
+            "yt-download-web=yt_downloader.web.server:run",
         ],
     },
-    python_requires=">=3.8",
-    author="Your Name",
-    description="YouTube video downloader using yt-dlp",
+    python_requires=">=3.10",
+    author="Paulo Vitor S. Soares",
+    description="YouTube video downloader with a CLI and a web interface",
     keywords="youtube download video yt-dlp",
 )
