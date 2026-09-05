@@ -1,0 +1,10 @@
+# Optional: transcription with OpenAI Whisper.
+#
+# This pulls in PyTorch. On a machine without an NVIDIA GPU, install the
+# CPU-only build FIRST to download ~200 MB instead of ~1 GB:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-transcribe.txt
+#
+-r requirements.txt
+openai-whisper>=20240930

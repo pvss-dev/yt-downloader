@@ -103,6 +103,32 @@
             </select>
           </label>
 
+          <label class="field" id="field-whisper" hidden>
+            <span class="field-label">Modelo Whisper</span>
+            <select id="whisper_model" name="whisper_model">
+              <option value="tiny">tiny — mais rápido, menos preciso</option>
+              <option value="base">base</option>
+              <option value="small" selected>small — equilíbrio</option>
+              <option value="medium">medium</option>
+              <option value="large">large — melhor qualidade</option>
+              <option value="turbo">turbo — rápido e preciso</option>
+            </select>
+          </label>
+
+          <label class="field" id="field-language" hidden>
+            <span class="field-label">Idioma falado</span>
+            <select id="language" name="language">
+              <option value="pt" selected>Português</option>
+              <option value="en">Inglês</option>
+              <option value="es">Espanhol</option>
+              <option value="fr">Francês</option>
+              <option value="de">Alemão</option>
+              <option value="it">Italiano</option>
+              <option value="ja">Japonês</option>
+              <option value="">Detectar automaticamente</option>
+            </select>
+          </label>
+
           <label class="field field-wide">
             <span class="field-label">Pasta de destino</span>
             <input
@@ -140,7 +166,13 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-text">Sobrescrever</span>
           </label>
+          <label class="toggle" id="toggle-transcribe">
+            <input type="checkbox" id="transcribe" name="transcribe">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-text">Transcrever</span>
+          </label>
         </div>
+        <p class="options-hint" id="transcribe-hint" hidden></p>
       </details>
     </form>
   </section>
@@ -175,9 +207,11 @@
         <span class="job-stats"></span>
         <span class="job-actions">
           <a class="btn btn-small btn-save" hidden>Salvar arquivo</a>
+          <a class="btn btn-small btn-transcript" hidden>Baixar .txt</a>
           <button type="button" class="btn btn-small btn-cancel">Cancelar</button>
         </span>
       </div>
+      <p class="job-transcript" hidden></p>
       <p class="job-error" hidden></p>
     </div>
   </article>

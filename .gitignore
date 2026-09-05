@@ -42,3 +42,9 @@ yt_downloader.egg-info/
 # TESTS
 # ======================
 .pytest_cache/
+
+# ======================
+# TRANSCRIPTS
+# ======================
+transcription.txt
+*.srt

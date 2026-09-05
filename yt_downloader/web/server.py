@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from ..config import DownloaderConfig
 from ..downloader import VideoDownloader
 from ..exceptions import DownloaderException
+from ..transcription.config import WHISPER_MODELS, TranscriptionConfig
+from ..transcription.transcriber import Transcriber
 from .jobs import _DONE, JobManager, safe_output_path
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,9 @@ class DownloadRequest(BaseModel):
     subtitles: bool = False
     thumbnail: bool = False
     overwrite: bool = False
+    transcribe: bool = False
+    whisper_model: str = "small"
+    language: Optional[str] = "pt"
 
     def to_config(self) -> DownloaderConfig:
         return DownloaderConfig(
@@ -51,6 +56,15 @@ class DownloadRequest(BaseModel):
             overwrite_files=self.overwrite,
         )
 
+    def to_transcription_config(self) -> Optional[TranscriptionConfig]:
+        if not self.transcribe:
+            return None
+        return TranscriptionConfig(
+            whisper_model=self.whisper_model,
+            # An empty language means "let Whisper detect it".
+            language=self.language or None,
+        )
+
 
 @app.get("/api/health")
 async def health() -> dict:
@@ -60,6 +74,8 @@ async def health() -> dict:
         "status": "ok",
         "yt_dlp_version": yt_dlp.version.__version__,
         "default_output": str(Path(DownloaderConfig.default_output_dir).resolve()),
+        "transcription_available": Transcriber.is_available(),
+        "whisper_models": list(WHISPER_MODELS),
     }
 
 
@@ -96,8 +112,21 @@ async def video_info(payload: InfoRequest) -> dict:
 
 @app.post("/api/download")
 async def start_download(payload: DownloadRequest) -> dict:
+    if payload.transcribe and not Transcriber.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Transcription is not installed. Run: pip install -e \".[transcribe]\""
+            ),
+        )
+
+    try:
+        transcription = payload.to_transcription_config()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     output = safe_output_path(payload.output_path, DownloaderConfig.default_output_dir)
-    job = jobs.create(payload.url, str(output), payload.to_config())
+    job = jobs.create(payload.url, str(output), payload.to_config(), transcription)
     return job.snapshot()
 
 
@@ -130,6 +159,20 @@ async def download_file(job_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="File no longer on disk")
 
     return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+@app.get("/api/jobs/{job_id}/transcript")
+async def download_transcript(job_id: str) -> FileResponse:
+    """Serve the finished transcript as a .txt download."""
+    job = jobs.get(job_id)
+    if job is None or not job.transcript_path:
+        raise HTTPException(status_code=404, detail="Transcript not available")
+
+    path = Path(job.transcript_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Transcript no longer on disk")
+
+    return FileResponse(path, filename=path.name, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/jobs/{job_id}/events")

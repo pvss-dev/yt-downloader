@@ -678,9 +678,51 @@ main {
   word-break: break-word;
 }
 
+.job-transcript {
+  margin: 0;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.btn-transcript {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.btn-transcript:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.options-hint {
+  margin: 10px 2px 2px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+.options-hint code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+
+.toggle input:disabled ~ .toggle-text { opacity: 0.45; }
+.toggle:has(input:disabled) { cursor: not-allowed; }
+
 /* per-status accents */
 
 .job[data-status="fetching"] .progress-bar,
+.job[data-status="loading_model"] .progress-bar,
 .job[data-status="queued"] .progress-bar {
   width: 100% !important;
   background: linear-gradient(
@@ -701,6 +743,9 @@ main {
 
 .job[data-status="processing"] .progress-bar { background: var(--warning); }
 .job[data-status="processing"] .job-status { color: var(--warning); }
+
+.job[data-status="transcribing"] .job-status { color: var(--accent); }
+.job[data-status="loading_model"] .job-status { color: var(--text-dim); }
 
 .job[data-status="downloading"] .job-status { color: var(--accent); }
 

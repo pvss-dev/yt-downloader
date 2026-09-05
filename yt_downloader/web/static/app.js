@@ -15,6 +15,7 @@ const audioOnly = $('audio_only');
 const maxHeight = $('max_height');
 const audioFormat = $('audio_format');
 const template = $('job-template');
+const transcribe = $('transcribe');
 
 // job id -> { el, source }
 const jobs = new Map();
@@ -24,6 +25,8 @@ const STATUS_LABELS = {
   fetching: 'Buscando info',
   downloading: 'Baixando',
   processing: 'Processando',
+  loading_model: 'Carregando modelo',
+  transcribing: 'Transcrevendo',
   completed: 'Concluído',
   error: 'Erro',
   cancelling: 'Cancelando',
@@ -103,6 +106,11 @@ function refreshOptionsSummary() {
   }
   if ($('playlist').checked) parts.push('playlist');
   if ($('subtitles').checked) parts.push('legendas');
+
+  const wantsTranscript = transcribe.checked;
+  $('field-whisper').hidden = !wantsTranscript;
+  $('field-language').hidden = !wantsTranscript;
+  if (wantsTranscript) parts.push(`transcrição ${$('whisper_model').value}`);
 
   optionsSummary.textContent = parts.join(' · ');
 }
@@ -226,8 +234,13 @@ function renderJob(job) {
     if (speed) stats.push(speed);
     const eta = formatEta(job.eta);
     if (eta) stats.push(`ETA ${eta}`);
+  } else if (job.status === 'transcribing') {
+    stats.push(`${job.percent.toFixed(1)}%`);
+    if (job.transcript_seconds) stats.push(`${Math.round(job.transcript_seconds)}s de áudio`);
   } else if (job.status === 'completed' && job.filepath) {
-    // Show just the filename; the full path lives in the tooltip.
+    // Language first: the filename repeats the title above and gets truncated,
+    // so anything after it would be invisible.
+    if (job.detected_language) stats.push(`idioma: ${job.detected_language}`);
     stats.push(job.filepath.split('/').pop());
   }
   const statsEl = el.querySelector('.job-stats');
@@ -248,6 +261,22 @@ function renderJob(job) {
     save.hidden = false;
   } else {
     save.hidden = true;
+  }
+
+  const transcript = el.querySelector('.btn-transcript');
+  if (job.transcript_path) {
+    transcript.href = `/api/jobs/${job.id}/transcript`;
+    transcript.hidden = false;
+  } else {
+    transcript.hidden = true;
+  }
+
+  const preview = el.querySelector('.job-transcript');
+  if (job.transcript_preview) {
+    preview.textContent = job.transcript_preview;
+    preview.hidden = false;
+  } else {
+    preview.hidden = true;
   }
 
   refreshChrome();
@@ -310,6 +339,9 @@ form.addEventListener('submit', async (event) => {
     subtitles: $('subtitles').checked,
     thumbnail: $('thumbnail').checked,
     overwrite: $('overwrite').checked,
+    transcribe: transcribe.checked,
+    whisper_model: $('whisper_model').value,
+    language: $('language').value,
   };
 
   try {
@@ -361,6 +393,18 @@ async function boot() {
     const health = await (await fetch('/api/health')).json();
     $('version').textContent = `yt-dlp ${health.yt_dlp_version}`;
     $('output_path').placeholder = health.default_output;
+
+    if (!health.transcription_available) {
+      // Whisper is an optional extra; say how to get it instead of offering a
+      // toggle that would only fail on submit.
+      transcribe.checked = false;
+      transcribe.disabled = true;
+      const hint = $('transcribe-hint');
+      hint.innerHTML =
+        'Transcrição indisponível — instale com <code>pip install -e ".[transcribe]"</code>';
+      hint.hidden = false;
+      refreshOptionsSummary();
+    }
   } catch (err) {
     $('version').textContent = 'servidor offline';
   }

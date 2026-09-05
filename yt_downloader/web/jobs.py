@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from ..config import DownloaderConfig
 from ..downloader import Progress, VideoDownloader
+from ..transcription.config import TranscriptionConfig
 
 # Sentinel pushed onto a job's queue when no further events will arrive.
 _DONE = object()
@@ -31,6 +32,7 @@ class Job:
     url: str
     output_path: str
     config: DownloaderConfig
+    transcription: Optional[TranscriptionConfig] = None
     status: str = "queued"
     percent: float = 0.0
     speed: Optional[float] = None
@@ -44,6 +46,10 @@ class Job:
     filepath: Optional[str] = None
     error: Optional[str] = None
     stream: Optional[str] = None
+    transcript_path: Optional[str] = None
+    transcript_seconds: Optional[float] = None
+    transcript_preview: Optional[str] = None
+    detected_language: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
     _events: queue.Queue = field(default_factory=queue.Queue, repr=False)
@@ -67,6 +73,11 @@ class Job:
             "filepath": self.filepath,
             "error": self.error,
             "stream": self.stream,
+            "transcribe": self.transcription is not None,
+            "transcript_path": self.transcript_path,
+            "transcript_seconds": self.transcript_seconds,
+            "transcript_preview": self.transcript_preview,
+            "detected_language": self.detected_language,
         }
 
 
@@ -99,12 +110,19 @@ class JobManager:
                 for old in finished[: len(self._jobs) - self._max_jobs]:
                     self._jobs.pop(old.id, None)
 
-    def create(self, url: str, output_path: str, config: DownloaderConfig) -> Job:
+    def create(
+            self,
+            url: str,
+            output_path: str,
+            config: DownloaderConfig,
+            transcription: Optional[TranscriptionConfig] = None,
+    ) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
             url=url,
             output_path=output_path,
             config=config,
+            transcription=transcription,
         )
         self._register(job)
 
@@ -179,11 +197,20 @@ class JobManager:
             result = downloader.download(job.url)
 
             if result.success:
-                job.status = "completed"
-                job.percent = 100.0
                 job.filepath = str(result.filepath) if result.filepath else None
                 if result.info:
                     job.title = result.info.title
+
+                if job.transcription is not None:
+                    self._transcribe(job)
+
+                if job.status == "cancelling":
+                    # Cancelled mid-transcription; the media file still landed.
+                    job.status = "cancelled"
+                    job.error = "Cancelled by user"
+                else:
+                    job.status = "completed"
+                    job.percent = 100.0
             elif job.status == "cancelling":
                 job.status = "cancelled"
                 job.error = "Cancelled by user"
@@ -199,6 +226,66 @@ class JobManager:
             job.eta = None
             self._emit(job)
             self._finish(job)
+
+
+    def _transcribe(self, job: Job) -> None:
+        """Second stage: turn the downloaded media into a transcript.
+
+        Runs against the file already on disk, so enabling transcription costs
+        one download rather than two.
+        """
+        from ..transcription import TranscriptionService
+        from ..transcription.transcriber import TranscriptionProgress
+
+        if not job.filepath:
+            job.error = "Cannot transcribe: downloaded file path is unknown"
+            return
+
+        def on_transcribe(progress: "TranscriptionProgress") -> None:
+            if self._cancelled(job):
+                raise _TranscriptionCancelled()
+            if progress.status == "loading_model":
+                job.status = "loading_model"
+            elif progress.status == "transcribing":
+                job.status = "transcribing"
+                if progress.percent is not None:
+                    job.percent = progress.percent
+                job.transcript_seconds = progress.seconds_done
+            self._emit(job)
+
+        job.status = "loading_model"
+        job.percent = 0.0
+        self._emit(job)
+
+        service = TranscriptionService(job.transcription, on_transcribe_progress=on_transcribe)
+
+        try:
+            outcome = service.process(job.filepath)
+        except _TranscriptionCancelled:
+            job.status = "cancelling"
+            return
+
+        if not outcome.success:
+            # The media downloaded fine; surface the transcript failure without
+            # throwing away the file the user already has.
+            job.error = f"Transcription failed: {outcome.error}"
+            return
+
+        job.transcript_path = str(outcome.transcript_path)
+        if outcome.result:
+            job.detected_language = outcome.result.language
+            preview = outcome.result.text.strip().replace("\n", " ")
+            job.transcript_preview = preview[:300] + ("..." if len(preview) > 300 else "")
+
+    @staticmethod
+    def _cancelled(job: Job) -> bool:
+        # JobManager.cancel() sets this before anything else, so it is the one
+        # signal both stages need to watch.
+        return job.status == "cancelling"
+
+
+class _TranscriptionCancelled(Exception):
+    """Unwinds out of the Whisper progress hook when the user cancels."""
 
 
 def is_terminal(status: str) -> bool:

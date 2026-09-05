@@ -11,16 +11,20 @@ setup(
     ],
     extras_require={
         "web": ["fastapi>=0.115", "uvicorn[standard]>=0.30"],
+        # Whisper pulls in PyTorch (~1 GB, or ~200 MB for the CPU-only build
+        # from https://download.pytorch.org/whl/cpu), so it stays optional.
+        "transcribe": ["openai-whisper>=20240930"],
         "dev": ["pytest>=8.0", "httpx>=0.27"],
     },
     entry_points={
         "console_scripts": [
             "yt-download=yt_downloader.cli:main",
             "yt-download-web=yt_downloader.web.server:run",
+            "yt-transcribe=yt_downloader.transcription.cli:main",
         ],
     },
     python_requires=">=3.10",
     author="Paulo Vitor S. Soares",
-    description="YouTube video downloader with a CLI and a web interface",
-    keywords="youtube download video yt-dlp",
+    description="YouTube downloader and Whisper transcriber, with a CLI and a web interface",
+    keywords="youtube download video yt-dlp whisper transcription subtitles",
 )
