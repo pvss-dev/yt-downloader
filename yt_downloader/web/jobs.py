@@ -29,9 +29,13 @@ class Job:
     """One download, its live state, and the queue feeding its SSE stream."""
 
     id: str
-    url: str
+    # Exactly one of these is set: `url` for a download, `local_path` for a
+    # file the user dropped on the page.
+    url: Optional[str]
     output_path: str
     config: DownloaderConfig
+    local_path: Optional[str] = None
+    source_name: Optional[str] = None
     transcription: Optional[TranscriptionConfig] = None
     status: str = "queued"
     percent: float = 0.0
@@ -60,6 +64,8 @@ class Job:
         return {
             "id": self.id,
             "url": self.url,
+            "source_name": self.source_name,
+            "is_upload": self.local_path is not None,
             "status": self.status,
             "percent": round(self.percent, 1),
             "speed": self.speed,
@@ -117,15 +123,39 @@ class JobManager:
             config: DownloaderConfig,
             transcription: Optional[TranscriptionConfig] = None,
     ) -> Job:
-        job = Job(
+        return self._start(Job(
             id=uuid.uuid4().hex[:12],
             url=url,
             output_path=output_path,
             config=config,
             transcription=transcription,
-        )
-        self._register(job)
+        ))
 
+    def create_upload(
+            self,
+            local_path: str,
+            source_name: str,
+            transcription: TranscriptionConfig,
+            output_path: str,
+    ) -> Job:
+        """A transcription-only job for a file the user uploaded.
+
+        `output_path` is where the transcript lands and must be outside the
+        upload's own directory, which is deleted once the job finishes.
+        """
+        return self._start(Job(
+            id=uuid.uuid4().hex[:12],
+            url=None,
+            output_path=output_path,
+            config=DownloaderConfig(),
+            local_path=local_path,
+            source_name=source_name,
+            transcription=transcription,
+            title=source_name,
+        ))
+
+    def _start(self, job: Job) -> Job:
+        self._register(job)
         thread = threading.Thread(target=self._run, args=(job,), daemon=True)
         thread.start()
         return job
@@ -154,7 +184,55 @@ class JobManager:
         job._events.put(_DONE)
 
     def _run(self, job: Job) -> None:
-        """Worker thread: fetch metadata, then download, emitting as it goes."""
+        """Worker thread: download and/or transcribe, emitting as it goes."""
+        if job.local_path is not None:
+            self._run_upload(job)
+            return
+
+        self._run_download(job)
+
+    def _run_upload(self, job: Job) -> None:
+        """An uploaded file skips the download stage entirely."""
+        try:
+            job.filepath = job.local_path
+            self._transcribe(job)
+
+            if job.status == "cancelling":
+                job.status = "cancelled"
+                job.error = "Cancelled by user"
+            elif job.error:
+                job.status = "error"
+            else:
+                job.status = "completed"
+                job.percent = 100.0
+
+        except Exception as e:
+            job.status = "error"
+            job.error = f"{type(e).__name__}: {e}"
+        finally:
+            # The user already has the original on their machine; keeping a
+            # second copy on the server serves nobody.
+            self._discard_upload(job)
+            self._emit(job)
+            self._finish(job)
+
+    @staticmethod
+    def _discard_upload(job: Job) -> None:
+        if not job.local_path:
+            return
+        try:
+            upload = Path(job.local_path)
+            upload.unlink(missing_ok=True)
+            # create_upload gives each upload its own directory.
+            if upload.parent.is_dir() and not any(upload.parent.iterdir()):
+                upload.parent.rmdir()
+        except OSError:
+            pass
+        finally:
+            job.filepath = None
+
+    def _run_download(self, job: Job) -> None:
+        """Fetch metadata, then download, then optionally transcribe."""
 
         def on_progress(progress: Progress) -> None:
             # Metadata rides along on the progress events, so the job never
@@ -259,8 +337,15 @@ class JobManager:
 
         service = TranscriptionService(job.transcription, on_transcribe_progress=on_transcribe)
 
+        target = None
+        if job.local_path is not None:
+            # Default would put the .txt beside the upload, inside the temp
+            # directory that gets removed when the job ends.
+            stem = Path(job.source_name or job.filepath).stem
+            target = str(Path(job.output_path) / f"{stem}.txt")
+
         try:
-            outcome = service.process(job.filepath)
+            outcome = service.process(job.filepath, target)
         except _TranscriptionCancelled:
             job.status = "cancelling"
             return

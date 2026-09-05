@@ -1,4 +1,6 @@
 import logging
+import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -89,6 +91,18 @@ class Transcriber:
             raise WhisperNotInstalled() from e
         return whisper
 
+    @staticmethod
+    def _model_is_cached(whisper, name: str) -> bool:
+        """Whether the weights are already on disk, so no download follows."""
+        try:
+            url = whisper._MODELS[name]
+            default = os.path.join(os.path.expanduser("~"), ".cache")
+            root = os.path.join(os.getenv("XDG_CACHE_HOME", default), "whisper")
+            return os.path.isfile(os.path.join(root, os.path.basename(url)))
+        except Exception:
+            # Only drives a log line; never block loading over it.
+            return True
+
     @property
     def device(self) -> str:
         if self._device is None:
@@ -131,6 +145,15 @@ class Transcriber:
         self._emit(TranscriptionProgress(
             "loading_model", device=self.device, model=self.config.whisper_model,
         ))
+
+        if not self._model_is_cached(whisper, self.config.whisper_model):
+            # Whisper prints a bare tqdm bar while fetching the weights; say
+            # what it is so a sudden 461 MB download isn't a mystery.
+            logger.info(
+                f"Downloading the Whisper '{self.config.whisper_model}' model "
+                f"(one time only, cached in ~/.cache/whisper)..."
+            )
+
         logger.info(
             f"Loading Whisper model ({self.config.whisper_model}) on {self.device.upper()}..."
         )
@@ -171,7 +194,12 @@ class Transcriber:
         if self.config.language:
             options["language"] = self.config.language
 
-        with _ProgressTap(wav_file, self._emit):
+        with _ProgressTap(wav_file, self._emit), warnings.catch_warnings():
+            # Whisper warns that CPU has no FP16 on every single run. We already
+            # log which device is in use, so it adds nothing but noise.
+            warnings.filterwarnings(
+                "ignore", message="FP16 is not supported on CPU", category=UserWarning
+            )
             try:
                 raw = model.transcribe(str(wav_file), **options)
             except Exception as e:

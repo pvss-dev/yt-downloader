@@ -78,13 +78,23 @@ recarregada sem perder os downloads em andamento.
 
 ### Transcrever pela interface
 
-Ligue o toggle **Transcrever** nas opções e escolha o modelo Whisper e o idioma
-(ou "detectar automaticamente"). O card do download ganha as etapas de carregar
-modelo e transcrever, mostra um trecho do texto ao terminar e um botão para
-baixar o `.txt`.
+O toggle **Transcrever o áudio** fica logo abaixo do campo de URL, sempre
+visível. Ao ligá-lo aparecem os seletores de modelo Whisper e de idioma (ou
+"detectar idioma"). O card ganha as etapas de carregar modelo e transcrever,
+mostra um trecho do texto ao terminar e um botão para baixar o `.txt`.
 
 A transcrição roda sobre o arquivo já baixado, então ligar o toggle custa **um**
 download, não dois.
+
+### Transcrever um arquivo do seu computador
+
+Arraste um vídeo ou áudio para qualquer lugar da página — ou clique em
+**escolha um arquivo**. O arquivo é enviado ao servidor local, transcrito e a
+cópia no servidor é apagada em seguida; fica só o `.txt`, salvo na pasta de
+destino configurada em Opções.
+
+Como o envio é por HTTP, isso funciona mesmo com o navegador em outra máquina da
+rede. Limite de 4 GB por arquivo.
 
 ### Tema claro / escuro
 

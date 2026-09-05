@@ -4,10 +4,13 @@ import asyncio
 import json
 import logging
 import queue
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +25,13 @@ from .jobs import _DONE, JobManager, safe_output_path
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Media the browser uploads lands here until its job finishes.
+UPLOAD_ROOT = Path(tempfile.gettempdir()) / "yt-downloader-uploads"
+
+# Refuse implausible uploads outright rather than filling the disk.
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB
+CHUNK = 1024 * 1024
 
 app = FastAPI(title="YouTube Downloader", version="2.0.0")
 jobs = JobManager()
@@ -127,6 +137,78 @@ async def start_download(payload: DownloadRequest) -> dict:
 
     output = safe_output_path(payload.output_path, DownloaderConfig.default_output_dir)
     job = jobs.create(payload.url, str(output), payload.to_config(), transcription)
+    return job.snapshot()
+
+
+@app.post("/api/upload")
+async def upload_and_transcribe(
+        file: UploadFile = File(...),
+        whisper_model: str = Form("small"),
+        language: str = Form("pt"),
+        output_path: str = Form(""),
+) -> dict:
+    """Accept a media file from the browser and transcribe it.
+
+    No download stage: the bytes arrive over HTTP, so the job goes straight to
+    Whisper.
+    """
+    if not Transcriber.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail='Transcription is not installed. Run: pip install -e ".[transcribe]"',
+        )
+
+    try:
+        transcription = TranscriptionConfig(
+            whisper_model=whisper_model,
+            language=language or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Keep only the basename: a browser may send a path, and "../" in it must
+    # never escape the upload directory.
+    source_name = Path(file.filename or "upload").name
+    if not source_name or source_name in (".", ".."):
+        source_name = "upload"
+
+    workdir = UPLOAD_ROOT / uuid.uuid4().hex[:12]
+    workdir.mkdir(parents=True, exist_ok=True)
+    target = workdir / source_name
+
+    written = 0
+    try:
+        with target.open("wb") as sink:
+            while chunk := await file.read(CHUNK):
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File is larger than {MAX_UPLOAD_BYTES // (1024**3)} GB",
+                    )
+                sink.write(chunk)
+    except HTTPException:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+    except OSError as e:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Could not store upload: {e}") from e
+    finally:
+        await file.close()
+
+    if written == 0:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="The uploaded file is empty")
+
+    destination = safe_output_path(output_path, DownloaderConfig.default_output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    job = jobs.create_upload(
+        local_path=str(target),
+        source_name=source_name,
+        transcription=transcription,
+        output_path=str(destination),
+    )
     return job.snapshot()
 
 

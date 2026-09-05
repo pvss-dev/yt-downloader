@@ -27,6 +27,7 @@ const STATUS_LABELS = {
   processing: 'Processando',
   loading_model: 'Carregando modelo',
   transcribing: 'Transcrevendo',
+  uploading: 'Enviando',
   completed: 'Concluído',
   error: 'Erro',
   cancelling: 'Cancelando',
@@ -107,13 +108,15 @@ function refreshOptionsSummary() {
   if ($('playlist').checked) parts.push('playlist');
   if ($('subtitles').checked) parts.push('legendas');
 
-  const wantsTranscript = transcribe.checked;
-  $('field-whisper').hidden = !wantsTranscript;
-  $('field-language').hidden = !wantsTranscript;
-  if (wantsTranscript) parts.push(`transcrição ${$('whisper_model').value}`);
-
   optionsSummary.textContent = parts.join(' · ');
 }
+
+function refreshTranscribeBar() {
+  $('transcribe-settings').hidden = !transcribe.checked;
+}
+
+transcribe.addEventListener('change', refreshTranscribeBar);
+refreshTranscribeBar();
 
 ['change', 'input'].forEach((evt) => {
   $('options').addEventListener(evt, refreshOptionsSummary);
@@ -207,7 +210,7 @@ function renderJob(job) {
   const { el } = entry;
   el.dataset.status = job.status;
 
-  el.querySelector('.job-title').textContent = job.title || job.url;
+  el.querySelector('.job-title').textContent = job.title || job.source_name || job.url;
   el.querySelector('.job-status').textContent = STATUS_LABELS[job.status] || job.status;
 
   const thumb = el.querySelector('.job-thumb');
@@ -234,18 +237,25 @@ function renderJob(job) {
     if (speed) stats.push(speed);
     const eta = formatEta(job.eta);
     if (eta) stats.push(`ETA ${eta}`);
+  } else if (job.status === 'uploading') {
+    stats.push(`${job.percent.toFixed(0)}%`);
+    if (job.total_bytes) {
+      stats.push(`${formatBytes(job.downloaded_bytes)} / ${formatBytes(job.total_bytes)}`);
+    }
   } else if (job.status === 'transcribing') {
     stats.push(`${job.percent.toFixed(1)}%`);
     if (job.transcript_seconds) stats.push(`${Math.round(job.transcript_seconds)}s de áudio`);
-  } else if (job.status === 'completed' && job.filepath) {
+  } else if (job.status === 'completed') {
     // Language first: the filename repeats the title above and gets truncated,
     // so anything after it would be invisible.
     if (job.detected_language) stats.push(`idioma: ${job.detected_language}`);
-    stats.push(job.filepath.split('/').pop());
+    // An upload's media is deleted once transcribed, so point at the transcript.
+    const saved = job.filepath || job.transcript_path;
+    if (saved) stats.push(saved.split('/').pop());
   }
   const statsEl = el.querySelector('.job-stats');
   statsEl.textContent = stats.join('  ·  ');
-  statsEl.title = job.status === 'completed' && job.filepath ? job.filepath : '';
+  statsEl.title = job.filepath || job.transcript_path || '';
 
   const errorEl = el.querySelector('.job-error');
   if (job.error && job.status !== 'cancelled') {
@@ -317,6 +327,114 @@ function subscribe(jobId) {
 async function cancelJob(jobId) {
   await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' }).catch(() => {});
 }
+
+/* ---------- local file upload ---------- */
+
+const dropzone = $('dropzone');
+const fileInput = $('file-input');
+
+function uploadFile(file) {
+  if (!file) return;
+
+  if (transcribe.disabled) {
+    previewError.textContent =
+      'Transcrição indisponível — instale o extra [transcribe] para enviar arquivos.';
+    previewError.hidden = false;
+    return;
+  }
+
+  const body = new FormData();
+  body.append('file', file);
+  body.append('whisper_model', $('whisper_model').value);
+  body.append('language', $('language').value);
+  body.append('output_path', $('output_path').value.trim());
+
+  // A placeholder card carries the browser-side upload progress, which fetch()
+  // cannot report; XMLHttpRequest still can.
+  const placeholderId = `upload-${Date.now()}`;
+  renderJob({
+    id: placeholderId, status: 'uploading', percent: 0,
+    title: file.name, source_name: file.name, is_upload: true,
+  });
+
+  const request = new XMLHttpRequest();
+  request.open('POST', '/api/upload');
+
+  request.upload.addEventListener('progress', (event) => {
+    if (!event.lengthComputable) return;
+    renderJob({
+      id: placeholderId, status: 'uploading',
+      percent: (event.loaded / event.total) * 100,
+      title: file.name, source_name: file.name, is_upload: true,
+      downloaded_bytes: event.loaded, total_bytes: event.total,
+    });
+  });
+
+  request.addEventListener('load', () => {
+    dropPlaceholder(placeholderId);
+    if (request.status >= 400) {
+      let detail = 'Falha ao enviar o arquivo.';
+      try {
+        detail = JSON.parse(request.responseText).detail || detail;
+      } catch (e) { /* keep the default */ }
+      previewError.textContent = detail;
+      previewError.hidden = false;
+      return;
+    }
+    const job = JSON.parse(request.responseText);
+    renderJob(job);
+    subscribe(job.id);
+  });
+
+  request.addEventListener('error', () => {
+    dropPlaceholder(placeholderId);
+    previewError.textContent = 'Falha ao contatar o servidor.';
+    previewError.hidden = false;
+  });
+
+  request.send(body);
+}
+
+function dropPlaceholder(id) {
+  const entry = jobs.get(id);
+  if (!entry) return;
+  entry.el.remove();
+  jobs.delete(id);
+  refreshChrome();
+}
+
+$('browse-btn').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  uploadFile(fileInput.files[0]);
+  fileInput.value = '';
+});
+
+// Dropping anywhere on the page works; the zone is only the visible target.
+let dragDepth = 0;
+
+window.addEventListener('dragenter', (event) => {
+  if (!event.dataTransfer?.types.includes('Files')) return;
+  event.preventDefault();
+  dragDepth += 1;
+  dropzone.classList.add('dragging');
+});
+
+window.addEventListener('dragover', (event) => {
+  if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+});
+
+window.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropzone.classList.remove('dragging');
+});
+
+window.addEventListener('drop', (event) => {
+  if (!event.dataTransfer?.files.length) return;
+  event.preventDefault();
+  dragDepth = 0;
+  dropzone.classList.remove('dragging');
+  uploadFile(event.dataTransfer.files[0]);
+});
 
 /* ---------- submit ---------- */
 
@@ -401,9 +519,12 @@ async function boot() {
       transcribe.disabled = true;
       const hint = $('transcribe-hint');
       hint.innerHTML =
-        'Transcrição indisponível — instale com <code>pip install -e ".[transcribe]"</code>';
+        'Indisponível — instale com <code>pip install -e ".[transcribe]"</code>';
       hint.hidden = false;
+      $('browse-btn').disabled = true;
+      dropzone.title = 'Requer o extra [transcribe]';
       refreshOptionsSummary();
+      refreshTranscribeBar();
     }
   } catch (err) {
     $('version').textContent = 'servidor offline';

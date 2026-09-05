@@ -1,5 +1,6 @@
 import json
 import threading
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -219,6 +220,153 @@ def test_transcript_404_when_job_has_none(client, monkeypatch):
     FakeDownloader.release.set()
     job = client.post("/api/download", json={"url": "http://yt/abc"}).json()
     assert client.get(f"/api/jobs/{job['id']}/transcript").status_code == 404
+
+
+# --------------------------- uploads ---------------------------
+
+@pytest.fixture
+def fake_transcription(monkeypatch, tmp_path):
+    """Replace Whisper with a stub that writes a transcript where asked."""
+    monkeypatch.setattr(server.Transcriber, "is_available", staticmethod(lambda: True))
+
+    # Held closed until the test subscribes, so the SSE stream is exercised
+    # against a running job rather than a finished one.
+    gate = threading.Event()
+
+    class FakeService:
+        release = gate
+
+        def __init__(self, config, on_transcribe_progress=None):
+            self.on_progress = on_transcribe_progress
+
+        def process(self, path, output_file=None, write_srt=False):
+            gate.wait(timeout=5)
+            from yt_downloader.transcription.service import TranscriptionOutcome
+            from yt_downloader.transcription.transcriber import (
+                TranscriptionProgress,
+                TranscriptionResult,
+            )
+
+            self.on_progress(TranscriptionProgress("loading_model", model="tiny"))
+            self.on_progress(TranscriptionProgress("transcribing", percent=100.0))
+
+            target = Path(output_file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("texto transcrito", encoding="utf-8")
+            return TranscriptionOutcome(
+                success=True,
+                result=TranscriptionResult(text="texto transcrito", language="pt"),
+                transcript_path=target,
+            )
+
+    monkeypatch.setattr("yt_downloader.transcription.TranscriptionService", FakeService)
+    # Tests that only care about the outcome let it run immediately; the one
+    # asserting on stage order clears this first.
+    gate.set()
+    return tmp_path
+
+
+def _drain(client, job_id, release=None):
+    events = []
+    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+        for line in response.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            events.append(json.loads(line[5:].strip()))
+            if release is not None:
+                release.set()
+            if events[-1]["status"] in ("completed", "error", "cancelled"):
+                break
+    return events
+
+
+def test_upload_transcribes_without_a_download_stage(client, fake_transcription, monkeypatch):
+    from yt_downloader.transcription import TranscriptionService as Fake
+
+    Fake.release.clear()  # hold the job until the stream is open
+
+    out = fake_transcription / "saida"
+    response = client.post(
+        "/api/upload",
+        files={"file": ("aula.mp4", b"fake media bytes", "video/mp4")},
+        data={"whisper_model": "tiny", "language": "pt", "output_path": str(out)},
+    )
+    assert response.status_code == 200
+    job = response.json()
+    assert job["is_upload"] is True
+    assert job["source_name"] == "aula.mp4"
+
+    events = _drain(client, job["id"], release=Fake.release)
+    statuses = [e["status"] for e in events]
+
+    # No download happens for an uploaded file.
+    assert "downloading" not in statuses
+    assert "loading_model" in statuses
+
+    final = events[-1]
+    assert final["status"] == "completed"
+    assert final["detected_language"] == "pt"
+    assert Path(final["transcript_path"]) == out / "aula.txt"
+    assert (out / "aula.txt").read_text(encoding="utf-8") == "texto transcrito"
+
+
+def test_upload_deletes_the_stored_media_afterwards(client, fake_transcription):
+    response = client.post(
+        "/api/upload",
+        files={"file": ("aula.mp4", b"fake media bytes", "video/mp4")},
+        data={"output_path": str(fake_transcription / "o")},
+    )
+    job_id = response.json()["id"]
+    stored = Path(server.jobs.get(job_id).local_path)
+
+    final = _drain(client, job_id)[-1]
+
+    assert final["status"] == "completed"
+    assert not stored.exists(), "the uploaded copy must not linger on the server"
+    assert not stored.parent.exists()
+    # ...and the UI must not offer a media file that is gone.
+    assert final["filepath"] is None
+
+
+def test_upload_strips_directories_from_the_filename(client, fake_transcription):
+    """A crafted filename must not write outside the upload directory."""
+    response = client.post(
+        "/api/upload",
+        files={"file": ("../../../../tmp/evil.mp4", b"bytes", "video/mp4")},
+        data={"output_path": str(fake_transcription / "o")},
+    )
+    job = response.json()
+    assert job["source_name"] == "evil.mp4"
+
+    stored = Path(server.jobs.get(job["id"]).local_path)
+    assert stored.parent.parent == server.UPLOAD_ROOT
+
+
+def test_upload_rejects_empty_file(client, fake_transcription):
+    response = client.post(
+        "/api/upload", files={"file": ("empty.mp4", b"", "video/mp4")},
+    )
+    assert response.status_code == 400
+    assert "empty" in response.json()["detail"].lower()
+
+
+def test_upload_rejects_bad_model(client, fake_transcription):
+    response = client.post(
+        "/api/upload",
+        files={"file": ("a.mp4", b"bytes", "video/mp4")},
+        data={"whisper_model": "gigantic"},
+    )
+    assert response.status_code == 400
+    assert "Unknown Whisper model" in response.json()["detail"]
+
+
+def test_upload_refused_without_whisper(client, monkeypatch):
+    monkeypatch.setattr(server.Transcriber, "is_available", staticmethod(lambda: False))
+    response = client.post(
+        "/api/upload", files={"file": ("a.mp4", b"bytes", "video/mp4")},
+    )
+    assert response.status_code == 400
+    assert "[transcribe]" in response.json()["detail"]
 
 
 def test_output_path_expands_user():

@@ -127,6 +127,40 @@ def test_transcriber_reports_whisper_missing(monkeypatch):
         Transcriber()._require_whisper()
 
 
+def test_announces_a_first_time_model_download(monkeypatch, caplog):
+    """A bare 461 MB tqdm bar with no explanation looks like a hang."""
+    import logging
+
+    fake_whisper = type("W", (), {
+        "_MODELS": {"small": "https://example/small.pt"},
+        "load_model": staticmethod(lambda *a, **k: object()),
+    })()
+    monkeypatch.setattr(Transcriber, "_require_whisper", staticmethod(lambda: fake_whisper))
+    monkeypatch.setattr(Transcriber, "_detect_device", staticmethod(lambda: "cpu"))
+
+    t = Transcriber(TranscriptionConfig(whisper_model="small"))
+
+    monkeypatch.setattr(Transcriber, "_model_is_cached", staticmethod(lambda w, n: False))
+    with caplog.at_level(logging.INFO):
+        t._model = None
+        t.load_model()
+    assert any("one time only" in r.message for r in caplog.records)
+
+    # ...and stays quiet once the weights are on disk.
+    caplog.clear()
+    monkeypatch.setattr(Transcriber, "_model_is_cached", staticmethod(lambda w, n: True))
+    with caplog.at_level(logging.INFO):
+        t._model = None
+        t.load_model()
+    assert not any("one time only" in r.message for r in caplog.records)
+
+
+def test_model_cache_check_never_blocks_loading(monkeypatch):
+    """A broken cache probe must not stop a transcription."""
+    broken = type("W", (), {})()  # no _MODELS attribute
+    assert Transcriber._model_is_cached(broken, "small") is True
+
+
 # --------------------------- service ---------------------------
 
 def test_url_detection():

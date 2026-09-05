@@ -171,6 +171,7 @@ class VideoDownloader:
         # Streams are identified by format_id as yt-dlp works through them.
         self._stream_ids: list[str] = []
         self._info: Optional[VideoInfo] = None
+        self._announced_postprocessors: set[str] = set()
 
     def ensure_output_directory(self) -> None:
         """Creates the output directory if it does not exist.
@@ -255,6 +256,12 @@ class VideoDownloader:
         if name == "MoveFiles":
             return
 
+        # yt-dlp fires 'started' twice for some postprocessors (Metadata and
+        # ExtractAudio among them), which would log and emit each one twice.
+        if name in self._announced_postprocessors:
+            return
+        self._announced_postprocessors.add(name)
+
         logger.info(f"Post-processing: {name}")
         if self.on_progress:
             self.on_progress(Progress(
@@ -324,6 +331,7 @@ class VideoDownloader:
         self._cancelled.clear()
         self._stream_ids.clear()
         self._info = None
+        self._announced_postprocessors.clear()
 
         opts = self.config.get_ydl_opts(self.output_path, self.verbose)
         opts["progress_hooks"] = [self._progress_hook]

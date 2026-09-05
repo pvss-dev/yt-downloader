@@ -10,7 +10,7 @@ setup(
         "yt-dlp[default]>=2026.8.19",
     ],
     extras_require={
-        "web": ["fastapi>=0.115", "uvicorn[standard]>=0.30"],
+        "web": ["fastapi>=0.115", "uvicorn[standard]>=0.30", "python-multipart>=0.0.9"],
         # Whisper pulls in PyTorch (~1 GB, or ~200 MB for the CPU-only build
         # from https://download.pytorch.org/whl/cpu), so it stays optional.
         "transcribe": ["openai-whisper>=20240930"],

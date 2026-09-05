@@ -57,6 +57,37 @@
         </button>
       </div>
 
+      <div class="transcribe-bar">
+        <label class="toggle">
+          <input type="checkbox" id="transcribe" name="transcribe">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-text toggle-text-strong">Transcrever o áudio</span>
+        </label>
+
+        <div class="transcribe-settings" id="transcribe-settings" hidden>
+          <select id="whisper_model" name="whisper_model" title="Modelo Whisper">
+            <option value="tiny">tiny — mais rápido</option>
+            <option value="base">base</option>
+            <option value="small" selected>small — equilíbrio</option>
+            <option value="medium">medium</option>
+            <option value="large">large — melhor qualidade</option>
+            <option value="turbo">turbo — rápido e preciso</option>
+          </select>
+          <select id="language" name="language" title="Idioma falado">
+            <option value="pt" selected>Português</option>
+            <option value="en">Inglês</option>
+            <option value="es">Espanhol</option>
+            <option value="fr">Francês</option>
+            <option value="de">Alemão</option>
+            <option value="it">Italiano</option>
+            <option value="ja">Japonês</option>
+            <option value="">Detectar idioma</option>
+          </select>
+        </div>
+
+        <p class="transcribe-hint" id="transcribe-hint" hidden></p>
+      </div>
+
       <div class="preview" id="preview" hidden>
         <img class="preview-thumb" id="preview-thumb" alt="">
         <div class="preview-meta">
@@ -103,32 +134,6 @@
             </select>
           </label>
 
-          <label class="field" id="field-whisper" hidden>
-            <span class="field-label">Modelo Whisper</span>
-            <select id="whisper_model" name="whisper_model">
-              <option value="tiny">tiny — mais rápido, menos preciso</option>
-              <option value="base">base</option>
-              <option value="small" selected>small — equilíbrio</option>
-              <option value="medium">medium</option>
-              <option value="large">large — melhor qualidade</option>
-              <option value="turbo">turbo — rápido e preciso</option>
-            </select>
-          </label>
-
-          <label class="field" id="field-language" hidden>
-            <span class="field-label">Idioma falado</span>
-            <select id="language" name="language">
-              <option value="pt" selected>Português</option>
-              <option value="en">Inglês</option>
-              <option value="es">Espanhol</option>
-              <option value="fr">Francês</option>
-              <option value="de">Alemão</option>
-              <option value="it">Italiano</option>
-              <option value="ja">Japonês</option>
-              <option value="">Detectar automaticamente</option>
-            </select>
-          </label>
-
           <label class="field field-wide">
             <span class="field-label">Pasta de destino</span>
             <input
@@ -166,15 +171,22 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-text">Sobrescrever</span>
           </label>
-          <label class="toggle" id="toggle-transcribe">
-            <input type="checkbox" id="transcribe" name="transcribe">
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-text">Transcrever</span>
-          </label>
         </div>
-        <p class="options-hint" id="transcribe-hint" hidden></p>
       </details>
     </form>
+
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+      <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4"/>
+        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+      </svg>
+      <p class="dropzone-text">
+        ou <button type="button" class="linkish" id="browse-btn">escolha um arquivo</button>
+        do computador para transcrever
+      </p>
+      <p class="dropzone-sub">arraste um vídeo ou áudio para qualquer lugar da página</p>
+    </div>
   </section>
 
   <section class="queue">

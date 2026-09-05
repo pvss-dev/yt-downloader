@@ -170,6 +170,30 @@ def test_movefiles_postprocessor_is_not_surfaced():
     assert [p.status for p in seen] == ["processing"]
 
 
+def test_postprocessor_announced_once_per_run():
+    """yt-dlp fires 'started' twice for Metadata and ExtractAudio."""
+    seen = []
+    d = VideoDownloader(on_progress=seen.append)
+
+    for _ in range(2):
+        d._postprocessor_hook({"status": "started", "postprocessor": "Metadata"})
+    d._postprocessor_hook({"status": "started", "postprocessor": "ExtractAudio"})
+
+    assert [p.postprocessor for p in seen] == ["Metadata", "ExtractAudio"]
+
+
+def test_postprocessor_dedup_resets_between_downloads():
+    d = VideoDownloader()
+    d._postprocessor_hook({"status": "started", "postprocessor": "Metadata"})
+    assert "Metadata" in d._announced_postprocessors
+
+    d._announced_postprocessors.clear()  # what download() does on each run
+    seen = []
+    d.on_progress = seen.append
+    d._postprocessor_hook({"status": "started", "postprocessor": "Metadata"})
+    assert len(seen) == 1
+
+
 def test_output_directory_is_not_created_until_download():
     """get_info must not leave an empty folder behind."""
     d = VideoDownloader(output_path="/tmp/yt-downloader-should-not-exist-xyz")

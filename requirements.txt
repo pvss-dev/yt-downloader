@@ -6,3 +6,5 @@ yt-dlp[default]>=2026.8.19
 # Web interface
 fastapi>=0.115
 uvicorn[standard]>=0.30
+# Required by FastAPI to accept the drag-and-drop file uploads.
+python-multipart>=0.0.9
