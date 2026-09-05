@@ -60,6 +60,11 @@ Vários downloads rodam em paralelo.
 O progresso chega ao navegador por Server-Sent Events, então a página pode ser
 recarregada sem perder os downloads em andamento.
 
+### Tema claro / escuro
+
+O botão no canto superior direito alterna entre os dois temas. A escolha fica
+no `localStorage` do navegador e sobrevive ao reload. O padrão é escuro.
+
 ## Linha de comando
 
 ```bash

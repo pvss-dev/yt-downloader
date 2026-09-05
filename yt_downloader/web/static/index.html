@@ -8,6 +8,16 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬇</text></svg>">
 </head>
 <body>
+<script>
+  // Runs before first paint: applying the stored theme in app.js (loaded at
+  // the end of body) would flash the dark default first.
+  try {
+    var saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') {
+      document.documentElement.dataset.theme = saved;
+    }
+  } catch (e) { /* storage blocked; keep the default */ }
+</script>
 
 <header class="topbar">
   <div class="brand">
@@ -17,7 +27,18 @@
     </svg>
     <h1>YouTube Downloader</h1>
   </div>
-  <div class="version" id="version" title="versão do yt-dlp em uso"></div>
+  <div class="topbar-right">
+    <div class="version" id="version" title="versão do yt-dlp em uso"></div>
+    <button type="button" class="theme-toggle" id="theme-toggle" title="Alternar tema">
+      <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2.4v2.6M12 19v2.6M4.2 4.2l1.9 1.9M17.9 17.9l1.9 1.9M2.4 12h2.6M19 12h2.6M4.2 19.8l1.9-1.9M17.9 6.1l1.9-1.9"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/>
+      </svg>
+    </button>
+  </div>
 </header>
 
 <main>

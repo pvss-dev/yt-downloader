@@ -32,6 +32,35 @@ const STATUS_LABELS = {
 
 const TERMINAL = new Set(['completed', 'error', 'cancelled']);
 
+/* ---------- theme ---------- */
+
+const themeToggle = $('theme-toggle');
+
+function currentTheme() {
+  // No attribute means the dark default; the inline head script has already
+  // applied any stored preference by now.
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  themeToggle.setAttribute(
+    'aria-label',
+    theme === 'light' ? 'Mudar para tema escuro' : 'Mudar para tema claro',
+  );
+  try {
+    localStorage.setItem('theme', theme);
+  } catch (e) {
+    // Private mode or blocked storage: the theme still applies for this visit.
+  }
+}
+
+themeToggle.addEventListener('click', () => {
+  applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+});
+
+applyTheme(currentTheme());
+
 /* ---------- formatting ---------- */
 
 function formatBytes(bytes) {
