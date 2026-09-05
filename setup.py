@@ -21,6 +21,7 @@ setup(
             "yt-download=yt_downloader.cli:main",
             "yt-download-web=yt_downloader.web.server:run",
             "yt-transcribe=yt_downloader.transcription.cli:main",
+            "yt-download-clean=yt_downloader.cleanup_cli:main",
         ],
     },
     python_requires=">=3.10",

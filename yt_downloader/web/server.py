@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from ..config import DownloaderConfig
 from ..downloader import VideoDownloader
 from ..exceptions import DownloaderException
+from ..retention import RetentionPolicy, RetentionScheduler
 from ..transcription.config import WHISPER_MODELS, TranscriptionConfig
 from ..transcription.transcriber import Transcriber
 from .jobs import _DONE, JobManager, safe_output_path
@@ -35,6 +36,10 @@ CHUNK = 1024 * 1024
 
 app = FastAPI(title="YouTube Downloader", version="2.0.0")
 jobs = JobManager()
+
+# Set by run() when the operator asks for automatic cleanup; stays None
+# otherwise, so no file is ever deleted unless requested.
+retention: Optional[RetentionScheduler] = None
 
 
 class InfoRequest(BaseModel):
@@ -86,6 +91,7 @@ async def health() -> dict:
         "default_output": str(Path(DownloaderConfig.default_output_dir).resolve()),
         "transcription_available": Transcriber.is_available(),
         "whisper_models": list(WHISPER_MODELS),
+        "retention": retention.policy.describe() if retention else None,
     }
 
 
@@ -212,6 +218,27 @@ async def upload_and_transcribe(
     return job.snapshot()
 
 
+@app.post("/api/retention/sweep")
+async def run_retention_sweep(dry_run: bool = True) -> dict:
+    """Run the cleanup now. Defaults to a dry run."""
+    if retention is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Retention is off. Start the server with --retention-days/--keep/--max-gb.",
+        )
+
+    result = await asyncio.to_thread(retention.run_once, dry_run)
+    return {
+        "dry_run": result.dry_run,
+        "deleted": [str(p) for p in result.deleted],
+        "freed_bytes": result.freed_bytes,
+        "freed": result.freed_display,
+        "kept": result.kept,
+        "errors": result.errors,
+        "summary": result.summary(),
+    }
+
+
 @app.get("/api/jobs")
 async def list_jobs() -> dict:
     return {"jobs": [job.snapshot() for job in jobs.all()]}
@@ -296,15 +323,33 @@ async def job_events(job_id: str) -> StreamingResponse:
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
-def run(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
+def run(
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        reload: bool = False,
+        retention_policy: Optional[RetentionPolicy] = None,
+        retention_dir: Optional[str] = None,
+        retention_interval_minutes: float = 60.0,
+) -> None:
     """Entry point used by `python -m yt_downloader.web`."""
     import uvicorn
+
+    global retention
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%H:%M:%S",
     )
+    if retention_policy is not None and retention_policy.is_active:
+        retention = RetentionScheduler(
+            directory=retention_dir or DownloaderConfig.default_output_dir,
+            policy=retention_policy,
+            interval_seconds=retention_interval_minutes * 60,
+            protected_paths=jobs.active_paths,
+        )
+        retention.start()
+
     print(f"\n  YouTube Downloader UI  ->  http://{host}:{port}\n")
     uvicorn.run(
         "yt_downloader.web.server:app" if reload else app,

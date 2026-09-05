@@ -170,6 +170,14 @@ class JobManager:
         self._emit(job)
         return True
 
+    def active_paths(self) -> list[str]:
+        """Files belonging to jobs still running, which a sweep must not touch."""
+        with self._lock:
+            return [
+                j.filepath for j in self._jobs.values()
+                if j.status not in _TERMINAL and j.filepath
+            ]
+
     def clear_finished(self) -> int:
         with self._lock:
             done = [j for j in self._jobs.values() if j.status in _TERMINAL]
@@ -197,6 +205,11 @@ class JobManager:
             job.filepath = job.local_path
             self._transcribe(job)
 
+            # Discard before marking the job terminal, never after: a snapshot
+            # taken in between would advertise a media file that is about to
+            # vanish, and the download button would 404.
+            self._discard_upload(job)
+
             if job.status == "cancelling":
                 job.status = "cancelled"
                 job.error = "Cancelled by user"
@@ -210,8 +223,7 @@ class JobManager:
             job.status = "error"
             job.error = f"{type(e).__name__}: {e}"
         finally:
-            # The user already has the original on their machine; keeping a
-            # second copy on the server serves nobody.
+            # Idempotent: also covers the exception path above.
             self._discard_upload(job)
             self._emit(job)
             self._finish(job)

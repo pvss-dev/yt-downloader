@@ -324,7 +324,8 @@ def test_upload_deletes_the_stored_media_afterwards(client, fake_transcription):
     assert final["status"] == "completed"
     assert not stored.exists(), "the uploaded copy must not linger on the server"
     assert not stored.parent.exists()
-    # ...and the UI must not offer a media file that is gone.
+    # No snapshot may ever pair a terminal status with a media file that is
+    # already gone, or the download button 404s.
     assert final["filepath"] is None
 
 

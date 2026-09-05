@@ -3,7 +3,7 @@
 Baixa vídeos do YouTube e transcreve áudio com Whisper — pela linha de comando
 ou por uma interface web.
 
-![status](https://img.shields.io/badge/tests-57%20passing-brightgreen)
+![status](https://img.shields.io/badge/tests-90%20passing-brightgreen)
 
 ## Instalação
 
@@ -225,12 +225,54 @@ yt_downloader/
     ├── transcriber.py # Whisper + progresso
     └── service.py    # Orquestra download -> conversão -> transcrição
 
-tests/                # 57 testes, sem acesso à rede
+tests/                # 90 testes, sem acesso à rede
 ```
 
 O transcriptor **não tem downloader próprio**: ele usa o `VideoDownloader` do
 pacote em modo áudio. Assim existe um único ponto para manter atualizado quando
 o YouTube muda.
+
+## Limpeza automática
+
+Nada é apagado por padrão. A limpeza só roda quando você define pelo menos um
+limite — e `--dry-run` mostra o que sairia antes de qualquer coisa sair.
+
+```bash
+# Ver o que uma regra de 30 dias removeria, sem remover
+yt-download-clean --days 30 --dry-run
+
+# Aplicar
+yt-download-clean --days 30
+
+# Outros limites (combináveis)
+yt-download-clean --max-gb 50      # mantém a pasta abaixo de 50 GB
+yt-download-clean --keep 100       # mantém só os 100 arquivos mais novos
+```
+
+No cron, para um servidor sem supervisão:
+
+```cron
+0 4 * * *  /caminho/.venv/bin/yt-download-clean --days 30 -o /srv/videos
+```
+
+Ou deixe o próprio servidor varrer de hora em hora:
+
+```bash
+python -m yt_downloader.web --retention-days 30
+python -m yt_downloader.web --retention-max-gb 50 --retention-interval 30
+```
+
+O que a limpeza **nunca** toca:
+
+- arquivos que não são deste projeto (`.docx`, `.jpg`, `.env`, código…) — só
+  extensões de mídia e, se você pedir, `.txt`/`.srt`
+- transcrições, a menos que você passe `--with-transcripts` (são pequenas e caras
+  de refazer)
+- symlinks — nunca são seguidos, para não apagar algo fora da pasta
+- arquivos de downloads em andamento
+
+Downloads interrompidos (`.part`) com mais de 24h são removidos junto, já que
+nada vai retomá-los. Use `--keep-partials` para preservá-los.
 
 ## Testes
 

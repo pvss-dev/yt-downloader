@@ -246,16 +246,24 @@ function renderJob(job) {
     stats.push(`${job.percent.toFixed(1)}%`);
     if (job.transcript_seconds) stats.push(`${Math.round(job.transcript_seconds)}s de áudio`);
   } else if (job.status === 'completed') {
-    // Language first: the filename repeats the title above and gets truncated,
-    // so anything after it would be invisible.
     if (job.detected_language) stats.push(`idioma: ${job.detected_language}`);
-    // An upload's media is deleted once transcribed, so point at the transcript.
-    const saved = job.filepath || job.transcript_path;
-    if (saved) stats.push(saved.split('/').pop());
   }
   const statsEl = el.querySelector('.job-stats');
   statsEl.textContent = stats.join('  ·  ');
   statsEl.title = job.filepath || job.transcript_path || '';
+
+  // The server already wrote the file to disk; saying where is what the user
+  // actually needs. The buttons below only fetch a second copy via the browser.
+  const savedEl = el.querySelector('.job-saved');
+  const savedPath = job.filepath || job.transcript_path;
+  if (job.status === 'completed' && savedPath) {
+    const folder = savedPath.slice(0, savedPath.lastIndexOf('/')) || '/';
+    savedEl.textContent = `Salvo em ${folder}`;
+    savedEl.title = savedPath;
+    savedEl.hidden = false;
+  } else {
+    savedEl.hidden = true;
+  }
 
   const errorEl = el.querySelector('.job-error');
   if (job.error && job.status !== 'cancelled') {
