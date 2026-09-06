@@ -375,3 +375,207 @@ def test_output_path_expands_user():
 
     assert not str(safe_output_path("~/vids", "./videos")).startswith("~")
     assert safe_output_path("", "./videos").is_absolute()
+
+
+# --------------------------- output confinement ---------------------------
+
+def test_output_root_confines_absolute_paths(tmp_path):
+    """Without this, any request could write to /etc, ~/.ssh or cron."""
+    from yt_downloader.web.jobs import OutputPathRejected, safe_output_path
+
+    root = tmp_path / "media"
+    root.mkdir()
+
+    inside = safe_output_path(str(root / "series"), "./videos", str(root))
+    assert inside == root / "series"
+
+    for escape in ("/etc", "/root/.ssh", str(tmp_path / "elsewhere")):
+        with pytest.raises(OutputPathRejected):
+            safe_output_path(escape, "./videos", str(root))
+
+
+def test_output_root_defeats_traversal(tmp_path):
+    from yt_downloader.web.jobs import OutputPathRejected, safe_output_path
+
+    root = tmp_path / "media"
+    root.mkdir()
+
+    with pytest.raises(OutputPathRejected):
+        safe_output_path("../../etc", "./videos", str(root))
+
+    # A relative path is taken as relative to the root, not the process cwd.
+    assert safe_output_path("shows", "./videos", str(root)) == root / "shows"
+
+
+def test_output_root_allows_the_root_itself(tmp_path):
+    from yt_downloader.web.jobs import safe_output_path
+
+    root = tmp_path / "media"
+    root.mkdir()
+    assert safe_output_path(str(root), "./videos", str(root)) == root
+
+
+def test_download_rejects_escaping_output_path(client, monkeypatch, tmp_path):
+    root = tmp_path / "media"
+    root.mkdir()
+    monkeypatch.setattr(server, "OUTPUT_ROOT", str(root))
+
+    response = client.post(
+        "/api/download", json={"url": "http://yt/abc", "output_path": "/etc"},
+    )
+    assert response.status_code == 400
+    assert "must be inside" in response.json()["detail"]
+
+
+def test_upload_rejects_escaping_output_path(client, monkeypatch, tmp_path):
+    root = tmp_path / "media"
+    root.mkdir()
+    monkeypatch.setattr(server, "OUTPUT_ROOT", str(root))
+    monkeypatch.setattr(server.Transcriber, "is_available", staticmethod(lambda: True))
+
+    response = client.post(
+        "/api/upload",
+        files={"file": ("a.mp4", b"bytes", "video/mp4")},
+        data={"output_path": "/etc"},
+    )
+    assert response.status_code == 400
+    # The rejected upload must not be left behind on disk.
+    assert not any(server.UPLOAD_ROOT.glob("*/a.mp4")) if server.UPLOAD_ROOT.exists() else True
+
+
+# --------------------------- session isolation ---------------------------
+#
+# Each TestClient keeps its own cookie jar, so two of them are two visitors.
+
+@pytest.fixture
+def other_client():
+    return TestClient(server.app)
+
+
+def _finished_job(client, monkeypatch=None):
+    FakeDownloader.release.set()
+    job = client.post("/api/download", json={"url": "http://yt/abc"}).json()
+    with client.stream("GET", f"/api/jobs/{job['id']}/events") as response:
+        for line in response.iter_lines():
+            if line.startswith("event: done"):
+                break
+    return job
+
+
+def test_each_visitor_gets_a_session_cookie(client):
+    response = client.get("/api/jobs")
+    assert server.SESSION_COOKIE in response.cookies
+    # httponly keeps it out of reach of page scripts.
+    assert "httponly" in response.headers["set-cookie"].lower()
+
+
+def test_visitors_do_not_see_each_others_jobs(client, other_client, monkeypatch):
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+
+    mine = _finished_job(client)
+
+    assert [j["id"] for j in client.get("/api/jobs").json()["jobs"]] == [mine["id"]]
+    assert other_client.get("/api/jobs").json()["jobs"] == []
+
+
+def test_a_visitor_cannot_download_another_visitors_file(client, other_client, monkeypatch, tmp_path):
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+
+    media = tmp_path / "mine.mkv"
+    media.write_bytes(b"secret")
+    mine = _finished_job(client)
+    server.jobs.get(mine["id"]).filepath = str(media)
+
+    assert client.get(f"/api/jobs/{mine['id']}/file").status_code == 200
+    # 404, not 403: a stranger must not learn the job even exists.
+    assert other_client.get(f"/api/jobs/{mine['id']}/file").status_code == 404
+
+
+def test_a_visitor_cannot_cancel_another_visitors_job(client, other_client, monkeypatch):
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+
+    FakeDownloader.release.clear()
+    mine = client.post("/api/download", json={"url": "http://yt/abc"}).json()
+    try:
+        assert other_client.post(f"/api/jobs/{mine['id']}/cancel").status_code == 404
+        assert server.jobs.get(mine["id"]).status != "cancelling"
+    finally:
+        FakeDownloader.release.set()
+
+
+def test_a_visitor_cannot_read_another_visitors_progress(client, other_client, monkeypatch):
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+
+    mine = _finished_job(client)
+    assert other_client.get(f"/api/jobs/{mine['id']}/events").status_code == 404
+
+
+def test_clearing_only_removes_your_own_jobs(client, other_client, monkeypatch):
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+
+    mine = _finished_job(client)
+    theirs = _finished_job(other_client)
+
+    assert other_client.delete("/api/jobs").json()["cleared"] == 1
+    assert server.jobs.get(mine["id"]) is not None
+    assert server.jobs.get(theirs["id"]) is None
+
+
+# --------------------------- public mode ---------------------------
+
+def test_public_mode_ignores_a_requested_output_path(client, monkeypatch, tmp_path):
+    """A visitor must not choose where files land on someone else's server."""
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+    monkeypatch.setattr(server, "PUBLIC_MODE", True)
+    monkeypatch.setattr(server, "OUTPUT_ROOT", str(tmp_path))
+    FakeDownloader.release.set()
+
+    job = client.post(
+        "/api/download",
+        json={"url": "http://yt/abc", "output_path": str(tmp_path / "chosen")},
+    ).json()
+
+    landed = Path(server.jobs.get(job["id"]).output_path)
+    assert landed != tmp_path / "chosen", "the requested path must be ignored"
+    assert landed == tmp_path / "videos", "it falls back to the server default"
+
+
+def test_public_mode_hides_the_retention_endpoint(client, monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC_MODE", True)
+    assert client.post("/api/retention/sweep").status_code == 404
+
+
+def test_public_mode_reports_itself_in_health(client, monkeypatch):
+    monkeypatch.setattr(server, "PUBLIC_MODE", True)
+    body = client.get("/api/health").json()
+    assert body["public_mode"] is True
+    # The server-side path is not a visitor's business.
+    assert body["output_root"] is None
+
+
+def test_quota_rejects_a_flood_from_one_session(client, monkeypatch):
+    from yt_downloader.web.jobs import JobManager
+
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+    monkeypatch.setattr(server, "jobs", JobManager(max_jobs_per_session_hour=2))
+    FakeDownloader.release.set()
+
+    for _ in range(2):
+        assert client.post("/api/download", json={"url": "http://yt/a"}).status_code == 200
+
+    third = client.post("/api/download", json={"url": "http://yt/a"})
+    assert third.status_code == 429
+    assert "per hour" in third.json()["detail"]
+
+
+def test_quota_is_per_session_not_global(client, other_client, monkeypatch):
+    from yt_downloader.web.jobs import JobManager
+
+    monkeypatch.setattr("yt_downloader.web.jobs.VideoDownloader", FakeDownloader)
+    monkeypatch.setattr(server, "jobs", JobManager(max_jobs_per_session_hour=1))
+    FakeDownloader.release.set()
+
+    assert client.post("/api/download", json={"url": "http://yt/a"}).status_code == 200
+    assert client.post("/api/download", json={"url": "http://yt/a"}).status_code == 429
+    # A different visitor still has their own allowance.
+    assert other_client.post("/api/download", json={"url": "http://yt/a"}).status_code == 200

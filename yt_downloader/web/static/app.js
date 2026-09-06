@@ -36,6 +36,23 @@ const STATUS_LABELS = {
 
 const TERMINAL = new Set(['completed', 'error', 'cancelled']);
 
+/* ---------- errors ---------- */
+
+async function explainFailure(response, fallback) {
+  // The app answers with JSON; nginx's own rate-limit page is HTML, so parsing
+  // has to be allowed to fail.
+  const detail = await response.json().then((d) => d.detail).catch(() => null);
+  if (detail) return detail;
+
+  if (response.status === 429) {
+    return 'Muitas requisições em pouco tempo. Espere um minuto e tente de novo.';
+  }
+  if (response.status === 413) {
+    return 'Arquivo grande demais.';
+  }
+  return fallback;
+}
+
 /* ---------- theme ---------- */
 
 const themeToggle = $('theme-toggle');
@@ -381,11 +398,16 @@ function uploadFile(file) {
   request.addEventListener('load', () => {
     dropPlaceholder(placeholderId);
     if (request.status >= 400) {
-      let detail = 'Falha ao enviar o arquivo.';
+      let detail = null;
       try {
-        detail = JSON.parse(request.responseText).detail || detail;
-      } catch (e) { /* keep the default */ }
-      previewError.textContent = detail;
+        detail = JSON.parse(request.responseText).detail;
+      } catch (e) { /* nginx errors are HTML, not JSON */ }
+      previewError.textContent = detail
+        || (request.status === 429
+            ? 'Muitas requisições em pouco tempo. Espere um minuto e tente de novo.'
+            : request.status === 413
+            ? 'Arquivo grande demais.'
+            : 'Falha ao enviar o arquivo.');
       previewError.hidden = false;
       return;
     }
@@ -478,8 +500,7 @@ form.addEventListener('submit', async (event) => {
     });
 
     if (!res.ok) {
-      const detail = await res.json().catch(() => ({}));
-      previewError.textContent = detail.detail || 'Não foi possível iniciar o download.';
+      previewError.textContent = await explainFailure(res, 'Não foi possível iniciar o download.');
       previewError.hidden = false;
       return;
     }
@@ -518,7 +539,13 @@ async function boot() {
   try {
     const health = await (await fetch('/api/health')).json();
     $('version').textContent = `yt-dlp ${health.yt_dlp_version}`;
-    $('output_path').placeholder = health.default_output;
+    if (health.public_mode) {
+      // The server picks the destination in public mode; showing a field that
+      // is silently discarded would just mislead.
+      $('field-output').hidden = true;
+    } else {
+      $('output_path').placeholder = health.default_output;
+    }
 
     if (!health.transcription_available) {
       // Whisper is an optional extra; say how to get it instead of offering a

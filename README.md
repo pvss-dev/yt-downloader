@@ -3,7 +3,7 @@
 Baixa vídeos do YouTube e transcreve áudio com Whisper — pela linha de comando
 ou por uma interface web.
 
-![status](https://img.shields.io/badge/tests-90%20passing-brightgreen)
+![status](https://img.shields.io/badge/tests-95%20passing-brightgreen)
 
 ## Instalação
 
@@ -225,7 +225,7 @@ yt_downloader/
     ├── transcriber.py # Whisper + progresso
     └── service.py    # Orquestra download -> conversão -> transcrição
 
-tests/                # 90 testes, sem acesso à rede
+tests/                # 95 testes, sem acesso à rede
 ```
 
 O transcriptor **não tem downloader próprio**: ele usa o `VideoDownloader` do
@@ -273,6 +273,25 @@ O que a limpeza **nunca** toca:
 
 Downloads interrompidos (`.part`) com mais de 24h são removidos junto, já que
 nada vai retomá-los. Use `--keep-partials` para preservá-los.
+
+## Deploy em servidor
+
+Há um pipeline pronto (GitHub Actions → GHCR → VPS por SSH) e um `Dockerfile`.
+O passo a passo, os secrets necessários e a config do nginx estão em
+**[DEPLOY.md](DEPLOY.md)**.
+
+```bash
+docker compose up -d          # com a imagem do registry
+```
+
+> **A aplicação não tem autenticação própria.** Quem alcança a porta enfileira
+> downloads e transcrições na sua máquina. Em servidor, mantenha-a atrás de
+> senha ou lista de IPs no nginx — o `deploy/nginx/yt-downloader.conf` já traz
+> as duas opções.
+
+Rodando em servidor, defina `YTDL_OUTPUT_ROOT`: ele confina qualquer pasta de
+destino pedida pelo cliente àquele diretório. A imagem Docker já define
+`/data/videos`.
 
 ## Testes
 

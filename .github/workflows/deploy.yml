@@ -1,0 +1,79 @@
+name: Deploy
+
+# Deploying is deliberately manual: a download or transcription in flight is
+# killed by a container restart, so you choose the moment.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy"
+        required: true
+        default: latest
+      restart:
+        description: "Recreate the container even if the tag is unchanged"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          # Fail loudly instead of leaving a half-finished deploy behind.
+          script_stops: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.VPS_APP_DIR }}"
+            IMAGE="ghcr.io/${{ github.repository }}:${{ inputs.tag }}"
+
+            cd "$APP_DIR"
+
+            echo "==> Authenticating to ghcr.io"
+            echo "${{ secrets.GHCR_TOKEN }}" \
+              | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            echo "==> Pulling $IMAGE"
+            docker pull "$IMAGE"
+
+            echo "==> Recording the current image for rollback"
+            PREVIOUS=$(docker inspect --format '{{.Config.Image}}' yt-downloader 2>/dev/null || echo "none")
+            echo "previous image: $PREVIOUS"
+
+            echo "==> Starting"
+            export YTDL_IMAGE="$IMAGE"
+            docker compose up -d ${{ inputs.restart && '--force-recreate' || '' }}
+
+            echo "==> Waiting for the health check"
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' yt-downloader 2>/dev/null || echo starting)
+              if [ "$STATUS" = "healthy" ]; then
+                echo "healthy after ${i}0s"
+                docker image prune -f --filter "until=168h" || true
+                exit 0
+              fi
+              if [ "$STATUS" = "unhealthy" ]; then
+                break
+              fi
+              sleep 10
+            done
+
+            echo "==> Deploy did not become healthy; rolling back to $PREVIOUS"
+            docker logs --tail 50 yt-downloader || true
+            if [ "$PREVIOUS" != "none" ]; then
+              export YTDL_IMAGE="$PREVIOUS"
+              docker compose up -d --force-recreate
+            fi
+            exit 1

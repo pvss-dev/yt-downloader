@@ -3,14 +3,16 @@
 import asyncio
 import json
 import logging
+import os
 import queue
+import secrets
 import shutil
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -21,11 +23,27 @@ from ..exceptions import DownloaderException
 from ..retention import RetentionPolicy, RetentionScheduler
 from ..transcription.config import WHISPER_MODELS, TranscriptionConfig
 from ..transcription.transcriber import Transcriber
-from .jobs import _DONE, JobManager, safe_output_path
+from .jobs import (
+    _DONE,
+    JobManager,
+    OutputPathRejected,
+    QuotaExceeded,
+    safe_output_path,
+)
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# When set, every client-supplied destination must resolve inside this
+# directory. Deployments should always set it; a bare local run may not.
+OUTPUT_ROOT: Optional[str] = os.getenv("YTDL_OUTPUT_ROOT") or None
+
+# Public deployments must not let a visitor choose where files land, no matter
+# what the form sends. Local runs keep the field working.
+PUBLIC_MODE = os.getenv("YTDL_PUBLIC", "").lower() in ("1", "true", "yes")
+
+SESSION_COOKIE = "ytdl_session"
 
 # Media the browser uploads lands here until its job finishes.
 UPLOAD_ROOT = Path(tempfile.gettempdir()) / "yt-downloader-uploads"
@@ -35,7 +53,42 @@ MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB
 CHUNK = 1024 * 1024
 
 app = FastAPI(title="YouTube Downloader", version="2.0.0")
-jobs = JobManager()
+
+jobs = JobManager(
+    max_concurrent=int(os.getenv("YTDL_MAX_CONCURRENT", "3")),
+    max_concurrent_transcriptions=int(os.getenv("YTDL_MAX_TRANSCRIPTIONS", "1")),
+    max_jobs_per_session_hour=(
+        int(os.getenv("YTDL_JOBS_PER_HOUR", "20")) if PUBLIC_MODE else None
+    ),
+)
+
+
+def session_of(request: Request) -> str:
+    """The caller's session id, from the cookie set by the middleware."""
+    return request.cookies.get(SESSION_COOKIE) or request.state.session
+
+
+@app.middleware("http")
+async def attach_session(request: Request, call_next):
+    """Give every visitor an opaque id, so jobs can be scoped to them.
+
+    This is ownership, not authentication: it stops one visitor seeing or
+    cancelling another's jobs. It does not identify anybody.
+    """
+    existing = request.cookies.get(SESSION_COOKIE)
+    request.state.session = existing or secrets.token_urlsafe(24)
+
+    response = await call_next(request)
+
+    if not existing:
+        response.set_cookie(
+            SESSION_COOKIE,
+            request.state.session,
+            max_age=60 * 60 * 24 * 30,
+            httponly=True,
+            samesite="lax",
+        )
+    return response
 
 # Set by run() when the operator asks for automatic cleanup; stays None
 # otherwise, so no file is ever deleted unless requested.
@@ -92,6 +145,8 @@ async def health() -> dict:
         "transcription_available": Transcriber.is_available(),
         "whisper_models": list(WHISPER_MODELS),
         "retention": retention.policy.describe() if retention else None,
+        "output_root": None if PUBLIC_MODE else OUTPUT_ROOT,
+        "public_mode": PUBLIC_MODE,
     }
 
 
@@ -127,7 +182,7 @@ async def video_info(payload: InfoRequest) -> dict:
 
 
 @app.post("/api/download")
-async def start_download(payload: DownloadRequest) -> dict:
+async def start_download(payload: DownloadRequest, request: Request) -> dict:
     if payload.transcribe and not Transcriber.is_available():
         raise HTTPException(
             status_code=400,
@@ -141,13 +196,29 @@ async def start_download(payload: DownloadRequest) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    output = safe_output_path(payload.output_path, DownloaderConfig.default_output_dir)
-    job = jobs.create(payload.url, str(output), payload.to_config(), transcription)
+    # In public mode the server decides where files go, full stop.
+    requested = "" if PUBLIC_MODE else payload.output_path
+    try:
+        output = safe_output_path(
+            requested, DownloaderConfig.default_output_dir, OUTPUT_ROOT
+        )
+    except OutputPathRejected as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        job = jobs.create(
+            session_of(request), payload.url, str(output),
+            payload.to_config(), transcription,
+        )
+    except QuotaExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+
     return job.snapshot()
 
 
 @app.post("/api/upload")
 async def upload_and_transcribe(
+        request: Request,
         file: UploadFile = File(...),
         whisper_model: str = Form("small"),
         language: str = Form("pt"),
@@ -206,21 +277,39 @@ async def upload_and_transcribe(
         shutil.rmtree(workdir, ignore_errors=True)
         raise HTTPException(status_code=400, detail="The uploaded file is empty")
 
-    destination = safe_output_path(output_path, DownloaderConfig.default_output_dir)
+    try:
+        destination = safe_output_path(
+            "" if PUBLIC_MODE else output_path,
+            DownloaderConfig.default_output_dir,
+            OUTPUT_ROOT,
+        )
+    except OutputPathRejected as e:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     destination.mkdir(parents=True, exist_ok=True)
 
-    job = jobs.create_upload(
-        local_path=str(target),
-        source_name=source_name,
-        transcription=transcription,
-        output_path=str(destination),
-    )
+    try:
+        job = jobs.create_upload(
+            owner=session_of(request),
+            local_path=str(target),
+            source_name=source_name,
+            transcription=transcription,
+            output_path=str(destination),
+        )
+    except QuotaExceeded as e:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=429, detail=str(e)) from e
+
     return job.snapshot()
 
 
 @app.post("/api/retention/sweep")
 async def run_retention_sweep(dry_run: bool = True) -> dict:
     """Run the cleanup now. Defaults to a dry run."""
+    if PUBLIC_MODE:
+        # Deleting other people's files is not a visitor's call to make.
+        raise HTTPException(status_code=404, detail="Not available")
     if retention is None:
         raise HTTPException(
             status_code=400,
@@ -240,26 +329,26 @@ async def run_retention_sweep(dry_run: bool = True) -> dict:
 
 
 @app.get("/api/jobs")
-async def list_jobs() -> dict:
-    return {"jobs": [job.snapshot() for job in jobs.all()]}
+async def list_jobs(request: Request) -> dict:
+    return {"jobs": [job.snapshot() for job in jobs.all(session_of(request))]}
 
 
 @app.delete("/api/jobs")
-async def clear_jobs() -> dict:
-    return {"cleared": jobs.clear_finished()}
+async def clear_jobs(request: Request) -> dict:
+    return {"cleared": jobs.clear_finished(session_of(request))}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str) -> dict:
-    if not jobs.cancel(job_id):
+async def cancel_job(job_id: str, request: Request) -> dict:
+    if not jobs.cancel(job_id, session_of(request)):
         raise HTTPException(status_code=404, detail="Job not found or already finished")
     return {"cancelled": True}
 
 
 @app.get("/api/jobs/{job_id}/file")
-async def download_file(job_id: str) -> FileResponse:
+async def download_file(job_id: str, request: Request) -> FileResponse:
     """Serve the finished file so the browser can save it locally."""
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, session_of(request))
     if job is None or not job.filepath:
         raise HTTPException(status_code=404, detail="File not available")
 
@@ -271,9 +360,9 @@ async def download_file(job_id: str) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/transcript")
-async def download_transcript(job_id: str) -> FileResponse:
+async def download_transcript(job_id: str, request: Request) -> FileResponse:
     """Serve the finished transcript as a .txt download."""
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, session_of(request))
     if job is None or not job.transcript_path:
         raise HTTPException(status_code=404, detail="Transcript not available")
 
@@ -285,9 +374,9 @@ async def download_transcript(job_id: str) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/events")
-async def job_events(job_id: str) -> StreamingResponse:
+async def job_events(job_id: str, request: Request) -> StreamingResponse:
     """Server-sent events carrying live progress for one job."""
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, session_of(request))
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 

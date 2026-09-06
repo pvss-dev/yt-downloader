@@ -1,0 +1,70 @@
+# Deployment compose for the VPS. The app port is deliberately NOT published
+# to the host: nginx is the only way in, and it reaches the container over the
+# shared Docker network.
+services:
+  yt-downloader:
+    image: ${YTDL_IMAGE:-ghcr.io/pvss-dev/yt-downloader:latest}
+    container_name: yt-downloader
+    restart: unless-stopped
+
+    environment:
+      # Every destination the browser asks for is confined to this directory.
+      YTDL_OUTPUT_ROOT: /data/videos
+      XDG_CACHE_HOME: /data/cache
+
+      # Open to anyone: the server picks the destination (the form's folder
+      # field is ignored), the retention endpoint is hidden, and each session
+      # gets an hourly allowance.
+      YTDL_PUBLIC: "1"
+      YTDL_JOBS_PER_HOUR: "${YTDL_JOBS_PER_HOUR:-20}"
+
+      # Downloads are I/O bound and cheap; a Whisper run pins a CPU core for
+      # minutes. Keep the second number low or transcriptions starve everything.
+      YTDL_MAX_CONCURRENT: "${YTDL_MAX_CONCURRENT:-3}"
+      YTDL_MAX_TRANSCRIPTIONS: "${YTDL_MAX_TRANSCRIPTIONS:-1}"
+
+    volumes:
+      # Downloads and transcripts. Survives redeploys.
+      - ytdl-media:/data/videos
+      # Whisper weights (~500 MB for `small`). Without this volume every
+      # container restart re-downloads them.
+      - ytdl-cache:/data/cache
+
+    command:
+      - python
+      - -m
+      - yt_downloader.web
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # Automatic cleanup, so the VPS disk cannot fill silently.
+      - --retention-days
+      - "${YTDL_RETENTION_DAYS:-30}"
+      - --retention-max-gb
+      - "${YTDL_RETENTION_MAX_GB:-20}"
+      - --retention-dir
+      - /data/videos
+
+    # Whisper on CPU is memory hungry; without a ceiling a transcription can
+    # push the whole VPS into swap and take nginx down with it.
+    deploy:
+      resources:
+        limits:
+          memory: ${YTDL_MEMORY_LIMIT:-4g}
+
+    networks:
+      - proxy-net
+
+volumes:
+  ytdl-media:
+  ytdl-cache:
+
+networks:
+  # The network the nginx compose project already created. `external` means we
+  # join it rather than try to own it. Compose names a network
+  # "<project>_<network>", so the nginx/ directory with `local-net` becomes
+  # `nginx_local-net`; override YTDL_NETWORK if the VPS path differs.
+  proxy-net:
+    external: true
+    name: ${YTDL_NETWORK:-nginx_local-net}

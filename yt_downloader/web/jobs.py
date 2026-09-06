@@ -23,12 +23,19 @@ _DONE = object()
 # Statuses after which a job emits no further events.
 _TERMINAL = {"completed", "error", "cancelled"}
 
+# How long a job waits for a free slot before giving up. Long enough to ride
+# out a busy spell, short enough that a client is not held forever.
+_QUEUE_TIMEOUT = 1800.0
+
 
 @dataclass
 class Job:
     """One download, its live state, and the queue feeding its SSE stream."""
 
     id: str
+    # Which browser session queued this. Every job endpoint checks it, so one
+    # visitor can never see, cancel or download another visitor's work.
+    owner: str
     # Exactly one of these is set: `url` for a download, `local_path` for a
     # file the user dropped on the page.
     url: Optional[str]
@@ -87,21 +94,65 @@ class Job:
         }
 
 
-class JobManager:
-    """Creates, tracks and cancels download jobs."""
+class QuotaExceeded(Exception):
+    """The session has queued more jobs than its allowance."""
 
-    def __init__(self, max_jobs: int = 200):
+
+class JobManager:
+    """Creates, tracks and cancels download jobs.
+
+    Concurrency is capped on purpose. yt-dlp is I/O bound and cheap, but a
+    Whisper transcription pins a CPU core for minutes; without a ceiling a
+    handful of visitors would take the whole machine down.
+    """
+
+    def __init__(
+            self,
+            max_jobs: int = 200,
+            max_concurrent: int = 3,
+            max_concurrent_transcriptions: int = 1,
+            max_jobs_per_session_hour: Optional[int] = None,
+    ):
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._max_jobs = max_jobs
+        self._slots = threading.Semaphore(max_concurrent)
+        self._transcribe_slots = threading.Semaphore(max_concurrent_transcriptions)
+        self._max_per_session_hour = max_jobs_per_session_hour
 
-    def get(self, job_id: str) -> Optional[Job]:
+    def get(self, job_id: str, owner: Optional[str] = None) -> Optional[Job]:
+        """Fetch a job. With `owner`, only that session's job is returned."""
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if owner is not None and job.owner != owner:
+            # Indistinguishable from "no such job", so ids cannot be probed.
+            return None
+        return job
 
-    def all(self) -> list[Job]:
+    def all(self, owner: Optional[str] = None) -> list[Job]:
         with self._lock:
-            return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            found = [
+                j for j in self._jobs.values()
+                if owner is None or j.owner == owner
+            ]
+        return sorted(found, key=lambda j: j.created_at, reverse=True)
+
+    def _check_quota(self, owner: str) -> None:
+        if self._max_per_session_hour is None:
+            return
+        cutoff = time.time() - 3600
+        with self._lock:
+            recent = sum(
+                1 for j in self._jobs.values()
+                if j.owner == owner and j.created_at > cutoff
+            )
+        if recent >= self._max_per_session_hour:
+            raise QuotaExceeded(
+                f"Limit of {self._max_per_session_hour} jobs per hour reached. "
+                "Try again later."
+            )
 
     def _register(self, job: Job) -> None:
         with self._lock:
@@ -118,13 +169,16 @@ class JobManager:
 
     def create(
             self,
+            owner: str,
             url: str,
             output_path: str,
             config: DownloaderConfig,
             transcription: Optional[TranscriptionConfig] = None,
     ) -> Job:
+        self._check_quota(owner)
         return self._start(Job(
             id=uuid.uuid4().hex[:12],
+            owner=owner,
             url=url,
             output_path=output_path,
             config=config,
@@ -133,6 +187,7 @@ class JobManager:
 
     def create_upload(
             self,
+            owner: str,
             local_path: str,
             source_name: str,
             transcription: TranscriptionConfig,
@@ -143,8 +198,10 @@ class JobManager:
         `output_path` is where the transcript lands and must be outside the
         upload's own directory, which is deleted once the job finishes.
         """
+        self._check_quota(owner)
         return self._start(Job(
             id=uuid.uuid4().hex[:12],
+            owner=owner,
             url=None,
             output_path=output_path,
             config=DownloaderConfig(),
@@ -160,8 +217,8 @@ class JobManager:
         thread.start()
         return job
 
-    def cancel(self, job_id: str) -> bool:
-        job = self.get(job_id)
+    def cancel(self, job_id: str, owner: Optional[str] = None) -> bool:
+        job = self.get(job_id, owner)
         if job is None or job.status in _TERMINAL:
             return False
         if job._downloader is not None:
@@ -178,9 +235,12 @@ class JobManager:
                 if j.status not in _TERMINAL and j.filepath
             ]
 
-    def clear_finished(self) -> int:
+    def clear_finished(self, owner: Optional[str] = None) -> int:
         with self._lock:
-            done = [j for j in self._jobs.values() if j.status in _TERMINAL]
+            done = [
+                j for j in self._jobs.values()
+                if j.status in _TERMINAL and (owner is None or j.owner == owner)
+            ]
             for job in done:
                 self._jobs.pop(job.id, None)
         return len(done)
@@ -192,12 +252,24 @@ class JobManager:
         job._events.put(_DONE)
 
     def _run(self, job: Job) -> None:
-        """Worker thread: download and/or transcribe, emitting as it goes."""
-        if job.local_path is not None:
-            self._run_upload(job)
+        """Worker thread: wait for a slot, then download and/or transcribe."""
+        # Everything queues behind the global limit. The job stays visible as
+        # "queued" meanwhile, so the page shows it waiting rather than nothing.
+        acquired = self._slots.acquire(timeout=_QUEUE_TIMEOUT)
+        if not acquired:
+            job.status = "error"
+            job.error = "The server is busy; try again in a few minutes."
+            self._emit(job)
+            self._finish(job)
             return
 
-        self._run_download(job)
+        try:
+            if job.local_path is not None:
+                self._run_upload(job)
+            else:
+                self._run_download(job)
+        finally:
+            self._slots.release()
 
     def _run_upload(self, job: Job) -> None:
         """An uploaded file skips the download stage entirely."""
@@ -343,6 +415,23 @@ class JobManager:
                 job.transcript_seconds = progress.seconds_done
             self._emit(job)
 
+        # Transcription gets its own, tighter limit: it is CPU bound, so more
+        # than a couple at once makes every one of them slower and starves the
+        # downloads sharing the machine.
+        job.status = "queued"
+        self._emit(job)
+        if not self._transcribe_slots.acquire(timeout=_QUEUE_TIMEOUT):
+            job.error = "Transcription queue is full; the media was downloaded."
+            return
+
+        try:
+            self._run_transcription(job, on_transcribe)
+        finally:
+            self._transcribe_slots.release()
+
+    def _run_transcription(self, job: Job, on_transcribe) -> None:
+        from ..transcription import TranscriptionService
+
         job.status = "loading_model"
         job.percent = 0.0
         self._emit(job)
@@ -389,7 +478,37 @@ def is_terminal(status: str) -> bool:
     return status in _TERMINAL
 
 
-def safe_output_path(raw: str, fallback: str) -> Path:
-    """Expand and validate a user-supplied output directory."""
+class OutputPathRejected(ValueError):
+    """The requested output directory falls outside the allowed root."""
+
+
+def safe_output_path(raw: str, fallback: str, root: Optional[str] = None) -> Path:
+    """Resolve a client-supplied output directory, confined to `root`.
+
+    The web form lets the caller name a destination, so without a root any
+    request could write anywhere the process can reach -- /etc, ~/.ssh, cron.
+    With a root set, the resolved path must stay inside it.
+
+    Args:
+        raw: What the client asked for. Empty means `fallback`.
+        fallback: Default destination when the client asked for nothing.
+        root: Directory the result must live under. None disables the check,
+            which is only appropriate for a purely local, single-user run.
+
+    Raises:
+        OutputPathRejected: The path resolves outside `root`.
+    """
     candidate = Path(raw).expanduser() if raw else Path(fallback).expanduser()
-    return candidate.resolve()
+
+    if root is None:
+        return candidate.resolve()
+
+    base = Path(root).expanduser().resolve()
+    # resolve() collapses "..", so a traversal attempt cannot survive this.
+    resolved = (base / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+
+    if resolved != base and base not in resolved.parents:
+        raise OutputPathRejected(
+            f"Output directory must be inside {base}"
+        )
+    return resolved
