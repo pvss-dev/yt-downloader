@@ -40,25 +40,26 @@ A porta do container **não é publicada** no host. O nginx é a única entrada.
 
 ## 1. Na VPS
 
-```bash
-# Pasta do app (só o compose vive aqui; o código vem na imagem)
-mkdir -p /opt/yt-downloader && cd /opt/yt-downloader
-curl -O https://raw.githubusercontent.com/pvss-dev/yt-downloader/main/docker-compose.yml
-```
+**Nada a fazer.** Não é preciso clonar o repositório nem baixar o compose: o
+workflow cria a pasta e envia o `docker-compose.yml` a cada deploy. É assim que
+mudanças no compose chegam ao servidor — sem clone para manter sincronizado.
 
-A rede do compose do nginx precisa existir antes. O Compose nomeia a rede como
-`<pasta>_<rede>`, então a pasta `nginx/` com a rede `local-net` vira
-`nginx_local-net`. Confira:
+A única coisa que precisa existir antes é a rede do nginx. O Compose nomeia a
+rede como `<pasta>_<rede>`, então `/root/projects/nginx` com `local-net` vira
+`nginx_local-net`:
 
 ```bash
 docker network ls | grep local-net
 ```
 
-Se o nome for outro, aponte no `.env` desta pasta:
+Se o nome for outro, crie um `.env` na pasta do app na VPS:
 
 ```bash
-echo "YTDL_NETWORK=o_nome_real" >> /opt/yt-downloader/.env
+echo "YTDL_NETWORK=o_nome_real" >> /root/projects/yt-downloader/.env
 ```
+
+O `.env` fica na VPS e não é sobrescrito pelo deploy — só o
+`docker-compose.yml` é enviado.
 
 ## 2. No projeto do nginx
 
@@ -87,30 +88,79 @@ demais, sem configuração extra.
 
 ## 3. Secrets no GitHub
 
-Em **Settings → Secrets and variables → Actions**:
+O workflow declara `environment: production`, então crie o environment primeiro
+e coloque os secrets **dentro dele**. Assim eles só existem para deploys, não
+para qualquer workflow do repositório — o que importa num repo público, onde
+qualquer pessoa pode abrir um PR.
 
-| Secret | O que é |
+**1. Criar o environment**
+
+`github.com/pvss-dev/yt-downloader` → **Settings** → **Environments** →
+**New environment** → nome `production` → **Configure environment**
+
+Ali dentro, opcionalmente marque *Required reviewers* com o seu usuário: cada
+deploy passa a esperar a sua aprovação.
+
+**2. Adicionar os secrets nesse environment**
+
+A tela do environment tem **duas** listas. O que dá acesso vai em *secrets*;
+o resto vai em *variables*, porque o GitHub mascara todo secret nos logs — e um
+deploy que imprime `==> Updating ***` é um deploy que você não consegue depurar.
+
+**Environment secrets** → *Add secret*:
+
+| Secret | Valor no seu caso |
 |---|---|
 | `VPS_HOST` | IP ou domínio da VPS |
-| `VPS_USER` | usuário do SSH |
-| `VPS_SSH_KEY` | chave **privada** (a pública vai no `authorized_keys` da VPS) |
-| `VPS_PORT` | porta do SSH, se não for 22 |
-| `VPS_APP_DIR` | `/opt/yt-downloader` |
-| `GHCR_TOKEN` | Personal Access Token com escopo `read:packages` |
+| `VPS_SSH_KEY` | conteúdo da chave **privada**, inteiro |
+| `VPS_PORT` | só se o SSH não estiver na 22 |
 
-O `GHCR_TOKEN` é necessário porque a VPS puxa a imagem por conta própria; o
-`GITHUB_TOKEN` automático só vale dentro do runner.
+**Environment variables** → *Add variable*:
 
-Crie também o environment **production** (Settings → Environments) se quiser
-exigir aprovação antes de cada deploy.
+| Variable | Valor no seu caso |
+|---|---|
+| `VPS_USER` | `root` |
+| `VPS_APP_DIR` | `/root/projects/yt-downloader` |
+
+Se algum faltar, o primeiro passo do workflow para e diz exatamente qual — em
+vez de o `cd` cair no `$HOME` sem avisar.
+
+`VPS_SSH_KEY` é o arquivo inteiro, incluindo as linhas
+`-----BEGIN OPENSSH PRIVATE KEY-----` e `-----END ...-----`. A chave **pública**
+correspondente precisa estar no `~/.ssh/authorized_keys` da VPS.
+
+Gerando um par só para o deploy:
+
+```bash
+ssh-keygen -t ed25519 -C "github-deploy" -f ~/.ssh/ytdl-deploy -N ""
+ssh-copy-id -i ~/.ssh/ytdl-deploy.pub root@SEU_IP
+cat ~/.ssh/ytdl-deploy        # <- este conteúdo vai no VPS_SSH_KEY
+```
+
+> Não há `GHCR_TOKEN`: o pacote é público e a VPS puxa a imagem sem
+> autenticação. Se algum dia tornar o pacote privado, será preciso voltar com o
+> secret e um passo de `docker login` no workflow.
 
 ## 4. Deploy
 
-Actions → **Deploy** → Run workflow → escolha a tag (`latest`, ou o SHA
-completo de um commit para voltar a uma versão específica).
+Actions → **Deploy** → Run workflow → tag `latest` (o padrão).
 
-O workflow espera o healthcheck ficar verde. Se não ficar em 5 minutos, ele
-imprime os logs e **volta para a imagem anterior** sozinho.
+O que o workflow faz na VPS, em ordem:
+
+1. confere se os secrets e variables existem, e diz qual falta
+2. cria a pasta na VPS, se não existir
+3. envia o `docker-compose.yml` do commit sendo deployado
+4. `docker pull` da imagem
+5. `docker compose up -d`
+6. espera o healthcheck até 5 minutos
+7. se não ficar verde, imprime os últimos 50 logs e **volta para a imagem
+   anterior** sozinho
+
+> O compose enviado vem do branch em que você roda o workflow. Rodando a partir
+> do `main` com a tag `latest`, compose e imagem vêm do mesmo commit.
+
+Para voltar a uma versão específica, rode o workflow com a tag
+`sha-<commit completo>`.
 
 ## Volumes e limpeza
 

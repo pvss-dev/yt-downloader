@@ -24,26 +24,77 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Deploy over SSH
+      - name: Check the deploy configuration
+        run: |
+          missing=""
+          [ -n "${{ secrets.VPS_HOST }}" ]    || missing="$missing VPS_HOST(secret)"
+          [ -n "${{ secrets.VPS_SSH_KEY }}" ] || missing="$missing VPS_SSH_KEY(secret)"
+          [ -n "${{ vars.VPS_USER }}" ]       || missing="$missing VPS_USER(variable)"
+          [ -n "${{ vars.VPS_APP_DIR }}" ]    || missing="$missing VPS_APP_DIR(variable)"
+          if [ -n "$missing" ]; then
+            echo "Missing in the 'production' environment:$missing" >&2
+            echo "Settings > Environments > production" >&2
+            exit 1
+          fi
+          echo "Configuration looks complete."
+
+      - uses: actions/checkout@v5
+
+      - name: Ensure the app directory exists
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
+          username: ${{ vars.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
+          script: mkdir -p "${{ vars.VPS_APP_DIR }}"
+
+      # The VPS holds no clone, so the compose file has to travel with the
+      # deploy. Without this it would drift: changes to volumes, limits or env
+      # vars would sit in the repo and never reach the server.
+      - name: Copy docker-compose.yml to the VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ vars.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: docker-compose.yml
+          target: ${{ vars.VPS_APP_DIR }}
+          overwrite: true
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          # Secrets for anything that grants access; variables for the rest,
+          # because GitHub masks every secret in the logs and a deploy that
+          # prints "==> Updating ***" is a deploy you cannot debug.
+          host: ${{ secrets.VPS_HOST }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          username: ${{ vars.VPS_USER }}
           # Fail loudly instead of leaving a half-finished deploy behind.
           script_stops: true
           script: |
             set -euo pipefail
 
-            APP_DIR="${{ secrets.VPS_APP_DIR }}"
+            APP_DIR="${{ vars.VPS_APP_DIR }}"
             IMAGE="ghcr.io/${{ github.repository }}:${{ inputs.tag }}"
+
+            # A missing secret or variable arrives as an empty string, which
+            # would turn `cd "$APP_DIR"` into a silent cd to $HOME. Say which
+            # one is missing instead.
+            if [ -z "$APP_DIR" ]; then
+              echo "VPS_APP_DIR is not set. Add it as an environment VARIABLE" >&2
+              echo "in Settings > Environments > production." >&2
+              exit 1
+            fi
 
             cd "$APP_DIR"
 
-            echo "==> Authenticating to ghcr.io"
-            echo "${{ secrets.GHCR_TOKEN }}" \
-              | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            # The image is a public package, so `docker pull` needs no login.
+            # Making it private again would require restoring a docker login
+            # step here with a read:packages token.
 
             echo "==> Pulling $IMAGE"
             docker pull "$IMAGE"
