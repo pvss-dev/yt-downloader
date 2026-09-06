@@ -1,8 +1,22 @@
 name: Deploy
 
-# Deploying is deliberately manual: a download or transcription in flight is
-# killed by a container restart, so you choose the moment.
+# Runs automatically after CI succeeds on main (see ci.yml), and manually for
+# rollbacks -- dispatch it with an older `sha-<commit>` tag to go back.
+#
+# Note that any deploy restarts the container, which kills a download or
+# transcription in flight. Add "Required reviewers" to the production
+# environment if you would rather approve each one.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: false
+        default: latest
+      restart:
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
     inputs:
       tag:
@@ -73,8 +87,9 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
           username: ${{ vars.VPS_USER }}
-          # Fail loudly instead of leaving a half-finished deploy behind.
-          script_stops: true
+          # `set -euo pipefail` on the first line below is what aborts on the
+          # first failing command. (v1 of this action dropped the old
+          # `script_stops` input, which did the same thing.)
           script: |
             set -euo pipefail
 

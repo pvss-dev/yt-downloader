@@ -79,3 +79,12 @@ jobs:
           # Without this the ~3 GB PyTorch layer is rebuilt on every run.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    # `needs: build` is what makes this safe to automate: the image is already
+    # in the registry by the time the VPS is told to pull it.
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
