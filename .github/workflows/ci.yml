@@ -50,6 +50,23 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # A missing secret makes the login step fail with an opaque error; say
+      # what is actually wrong instead.
+      - name: Check the publishing credentials
+        if: github.event_name == 'push'
+        run: |
+          missing=""
+          [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] || missing="$missing DOCKERHUB_USERNAME"
+          [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]    || missing="$missing DOCKERHUB_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secret(s):$missing" >&2
+            echo "Add them in Settings > Secrets and variables > Actions." >&2
+            echo "The token comes from Docker Hub > Account Settings >" >&2
+            echo "Personal access tokens, with Read & Write permission." >&2
+            exit 1
+          fi
+          echo "Credentials are present."
+
       # Pull requests only prove the image builds; nothing is published.
       - name: Log in to Docker Hub
         if: github.event_name == 'push'
