@@ -96,13 +96,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Update the Docker Hub description
-        # Keeps the README on Docker Hub in step with the repository, so the
-        # page people land on is never a stale copy.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.IMAGE }}
-          short-description: "Baixe vídeos do YouTube e transcreva com Whisper, por CLI ou navegador"
+      # A descrição do Docker Hub não é sincronizada aqui de propósito: a
+      # action que faz isso exige a SENHA da conta, não um token de acesso.
+      # Guardar a senha no CI para publicar um texto amplia demais o estrago
+      # de um vazamento -- o token só publica imagem e é revogável sozinho.
+      # A descrição se ajusta uma vez, à mão, em hub.docker.com.
