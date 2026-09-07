@@ -6,7 +6,7 @@ from typing import Optional
 
 from ..config import DownloaderConfig
 from ..downloader import ProgressCallback, VideoDownloader
-from ..exceptions import TranscriptionError
+from ..exceptions import TranscriptionCancelled, TranscriptionError
 from .config import TranscriptionConfig
 from .converter import AudioConverter
 from .transcriber import TranscribeProgress, Transcriber, TranscriptionResult
@@ -126,6 +126,9 @@ class TranscriptionService:
                     media_path=source if not self.is_url(path_or_url) else None,
                 )
 
+        except TranscriptionCancelled:
+            # The caller asked to stop; let them decide what that means.
+            raise
         except TranscriptionError as e:
             logger.error(f"Transcription failed: {e}")
             return TranscriptionOutcome(success=False, error=str(e))

@@ -23,6 +23,15 @@ class TranscriptionError(DownloaderException):
     pass
 
 
+class TranscriptionCancelled(DownloaderException):
+    """Raised from a progress callback to abort a run in flight.
+
+    Deliberately NOT a TranscriptionError: it is control flow, not a failure,
+    and Transcriber.transcribe must let it through instead of reporting the
+    job as broken.
+    """
+
+
 class WhisperNotInstalled(TranscriptionError):
     """Whisper (and PyTorch) are an optional extra that is not installed."""
 

@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from ..config import DownloaderConfig
 from ..downloader import Progress, VideoDownloader
+from ..exceptions import TranscriptionCancelled
 from ..transcription.config import TranscriptionConfig
 
 # Sentinel pushed onto a job's queue when no further events will arrive.
@@ -405,7 +406,7 @@ class JobManager:
 
         def on_transcribe(progress: "TranscriptionProgress") -> None:
             if self._cancelled(job):
-                raise _TranscriptionCancelled()
+                raise TranscriptionCancelled()
             if progress.status == "loading_model":
                 job.status = "loading_model"
             elif progress.status == "transcribing":
@@ -447,7 +448,7 @@ class JobManager:
 
         try:
             outcome = service.process(job.filepath, target)
-        except _TranscriptionCancelled:
+        except TranscriptionCancelled:
             job.status = "cancelling"
             return
 
@@ -468,10 +469,6 @@ class JobManager:
         # JobManager.cancel() sets this before anything else, so it is the one
         # signal both stages need to watch.
         return job.status == "cancelling"
-
-
-class _TranscriptionCancelled(Exception):
-    """Unwinds out of the Whisper progress hook when the user cancels."""
 
 
 def is_terminal(status: str) -> bool:

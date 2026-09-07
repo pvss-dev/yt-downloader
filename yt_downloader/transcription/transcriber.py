@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..exceptions import TranscriptionError, WhisperNotInstalled
+from ..exceptions import (
+    TranscriptionCancelled,
+    TranscriptionError,
+    WhisperNotInstalled,
+)
 from .config import TranscriptionConfig
 
 logger = logging.getLogger(__name__)
@@ -202,6 +206,10 @@ class Transcriber:
             )
             try:
                 raw = model.transcribe(str(wav_file), **options)
+            except TranscriptionCancelled:
+                # Raised by the caller's progress callback. Wrapping it as a
+                # TranscriptionError would report a cancelled job as failed.
+                raise
             except Exception as e:
                 raise TranscriptionError(f"Transcription failed: {e}") from e
 
