@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: pvssdev/yt-downloader
+
 jobs:
   test:
     name: Tests
@@ -39,31 +42,27 @@ jobs:
         run: pytest -q
 
   build:
-    name: Build image
+    name: Build and publish
     needs: test
     runs-on: ubuntu-latest
-    # Only publish from the default branch; PRs just prove the image builds.
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      # Pull requests only prove the image builds; nothing is published.
+      - name: Log in to Docker Hub
         if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=branch
             type=sha,format=long
@@ -80,11 +79,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
-    name: Deploy
-    # `needs: build` is what makes this safe to automate: the image is already
-    # in the registry by the time the VPS is told to pull it.
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/deploy.yml
-    secrets: inherit
+      - name: Update the Docker Hub description
+        # Keeps the README on Docker Hub in step with the repository, so the
+        # page people land on is never a stale copy.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: "Baixe vídeos do YouTube e transcreva com Whisper, por CLI ou navegador"

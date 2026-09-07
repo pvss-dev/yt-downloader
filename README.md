@@ -3,9 +3,69 @@
 Baixa vídeos do YouTube e transcreve áudio com Whisper — pela linha de comando
 ou por uma interface web.
 
-![status](https://img.shields.io/badge/tests-95%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-107%20passing-brightgreen)
+[![docker](https://img.shields.io/badge/docker-pvssdev%2Fyt--downloader-blue)](https://hub.docker.com/r/pvssdev/yt-downloader)
 
-## Instalação
+Há dois jeitos de usar: **puxar a imagem Docker** (nada a instalar além do
+Docker) ou **clonar e rodar com Python**. Os dois estão abaixo.
+
+## Opção 1 — Docker
+
+Nada a instalar além do Docker: a imagem já traz Python, ffmpeg e o Whisper.
+
+```bash
+mkdir -p yt-downloader && cd yt-downloader
+curl -O https://raw.githubusercontent.com/pvss-dev/yt-downloader/main/docker-compose.yml
+docker compose up -d
+```
+
+Abra **http://127.0.0.1:8000**. Os vídeos e transcrições aparecem na pasta
+`videos/`, ao lado do compose.
+
+Ou sem o compose, num comando só:
+
+```bash
+docker run -d --name yt-downloader \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:8000:8000 \
+  -e YTDL_OUTPUT_ROOT=/data/videos \
+  -e XDG_CACHE_HOME=/data/cache \
+  -v "$PWD/videos:/data/videos" \
+  -v "$PWD/.whisper-cache:/data/cache" \
+  pvssdev/yt-downloader:latest
+```
+
+> **O `--user` não é opcional.** A imagem roda como um usuário sem privilégios,
+> e um bind mount preserva a dona do host — sem passar o seu uid, o container
+> não consegue escrever e todo download falha com `Permission denied`. O
+> `docker-compose.yml` já cuida disso; se o seu usuário não for 1000, crie um
+> `.env` ao lado com `UID=` e `GID=` (veja `id -u` e `id -g`).
+
+A porta é publicada apenas em `127.0.0.1`: a aplicação não tem autenticação, e
+expô-la na rede deixaria qualquer um enfileirar downloads na sua máquina.
+
+Também dá para usar a CLI dentro do container:
+
+```bash
+docker compose exec yt-downloader yt-download "URL" --max-quality 720
+```
+
+### Tags disponíveis
+
+| Tag | O que é |
+|---|---|
+| `latest` | último build do `main` |
+| `develop` | último build do `develop` |
+| `sha-<commit>` | um commit específico, para fixar a versão |
+
+### Limpeza dos volumes
+
+```bash
+docker compose down                 # para, mantendo videos/ e o cache
+rm -rf .whisper-cache               # apaga os modelos baixados (~500 MB)
+```
+
+## Opção 2 — Clonar e rodar com Python
 
 O venv é obrigatório, não opcional. Ative-o **antes** do `pip install`:
 
@@ -225,7 +285,7 @@ yt_downloader/
     ├── transcriber.py # Whisper + progresso
     └── service.py    # Orquestra download -> conversão -> transcrição
 
-tests/                # 95 testes, sem acesso à rede
+tests/                # 107 testes, sem acesso à rede
 ```
 
 O transcriptor **não tem downloader próprio**: ele usa o `VideoDownloader` do
@@ -274,24 +334,24 @@ O que a limpeza **nunca** toca:
 Downloads interrompidos (`.part`) com mais de 24h são removidos junto, já que
 nada vai retomá-los. Use `--keep-partials` para preservá-los.
 
-## Deploy em servidor
+## Hospedar em servidor
 
-Há um pipeline pronto (GitHub Actions → GHCR → VPS por SSH) e um `Dockerfile`.
-O passo a passo, os secrets necessários e a config do nginx estão em
-**[DEPLOY.md](DEPLOY.md)**.
+Este projeto é feito para rodar **na sua própria máquina**, e é assim que
+recomendo usá-lo.
 
-```bash
-docker compose up -d          # com a imagem do registry
-```
+Hospedar em VPS esbarra num problema que não é do código: o YouTube exige
+verificação anti-bot em requisições vindas de faixas de IP de datacenter. Medi
+numa VPS comum — **1 de 8 vídeos funcionou**, com todos os clientes de extração
+que o yt-dlp oferece. Só contorna com cookies de uma conta logada, o que expõe
+essa conta a suspensão.
 
-> **A aplicação não tem autenticação própria.** Quem alcança a porta enfileira
-> downloads e transcrições na sua máquina. Em servidor, mantenha-a atrás de
-> senha ou lista de IPs no nginx — o `deploy/nginx/yt-downloader.conf` já traz
-> as duas opções.
+Se ainda assim for hospedar, dois cuidados mínimos: a aplicação **não tem
+autenticação** (quem alcança a porta usa), e defina `YTDL_OUTPUT_ROOT` para
+confinar a pasta de destino que o cliente pede.
 
-Rodando em servidor, defina `YTDL_OUTPUT_ROOT`: ele confina qualquer pasta de
-destino pedida pelo cliente àquele diretório. A imagem Docker já define
-`/data/videos`.
+Para transcrever em servidor, sem tocar no YouTube, veja
+[transcribe-videos](https://github.com/pvss-dev/transcribe-videos) — é a parte
+de transcrição deste projeto, isolada e sem o problema de IP.
 
 ## Testes
 

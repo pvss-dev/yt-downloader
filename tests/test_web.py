@@ -407,6 +407,17 @@ def test_output_root_defeats_traversal(tmp_path):
     assert safe_output_path("shows", "./videos", str(root)) == root / "shows"
 
 
+def test_no_requested_path_lands_in_the_root_itself(tmp_path):
+    """Not root/videos: the relative default must not be appended to the root."""
+    from yt_downloader.web.jobs import safe_output_path
+
+    root = tmp_path / "media"
+    root.mkdir()
+    assert safe_output_path("", "./videos", str(root)) == root
+    # Without a root, the fallback still applies as before.
+    assert safe_output_path("", str(tmp_path / "x"), None) == tmp_path / "x"
+
+
 def test_output_root_allows_the_root_itself(tmp_path):
     from yt_downloader.web.jobs import safe_output_path
 
@@ -537,7 +548,9 @@ def test_public_mode_ignores_a_requested_output_path(client, monkeypatch, tmp_pa
 
     landed = Path(server.jobs.get(job["id"]).output_path)
     assert landed != tmp_path / "chosen", "the requested path must be ignored"
-    assert landed == tmp_path / "videos", "it falls back to the server default"
+    # The root itself, not root/videos: appending the relative default would
+    # nest a directory nobody asked for.
+    assert landed == tmp_path
 
 
 def test_public_mode_hides_the_retention_endpoint(client, monkeypatch):

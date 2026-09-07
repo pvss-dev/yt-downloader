@@ -504,6 +504,13 @@ def safe_output_path(raw: str, fallback: str, root: Optional[str] = None) -> Pat
         return candidate.resolve()
 
     base = Path(root).expanduser().resolve()
+
+    # With a root configured, "no preference" means the root itself. Falling
+    # back to the relative default here would resolve it *inside* the root and
+    # nest a directory that nobody asked for -- /data/videos/videos.
+    if not raw:
+        return base
+
     # resolve() collapses "..", so a traversal attempt cannot survive this.
     resolved = (base / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 

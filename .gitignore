@@ -48,3 +48,8 @@ yt_downloader.egg-info/
 # ======================
 transcription.txt
 *.srt
+
+# ======================
+# DOCKER
+# ======================
+.whisper-cache/
